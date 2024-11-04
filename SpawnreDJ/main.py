@@ -1,166 +1,105 @@
 # main.py
 
+import pandas as pd
+import argparse
 import os
 import sys
 import getpass
 from types import SimpleNamespace
-from dotenv import load_dotenv, set_key
-import logging
-
-# Import your module functions
+from dotenv import load_dotenv
 from SpawnreDJ.M3U_from_folder import generate_m3u
 from SpawnreDJ.folder_from_M3U import copy_tracks_with_sequence
 from SpawnreDJ.anal_M3U import analyze_m3u
-from SpawnreDJ.M3U_from_CSV import create_clusters, order_clusters, write_m3u, print_summary
+from SpawnreDJ.M3U_from_CSV import generate_curated_m3u
 
-# Configure logging
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-
-# Path to the environment file
-ENV_FILE = 'APIds.env'
-
-def load_credentials() -> dict:
+def load_api_credentials(env_path='APIds.env'):
     """
-    Load API credentials from the environment file.
-    Returns a dictionary with credentials or empty strings if not found.
+    Load API credentials from the specified .env file.
+    Returns a dictionary with keys: lastfm_api_key, spotify_client_id, spotify_client_secret
     """
-    load_dotenv(ENV_FILE)
-    credentials = {
-        'lastfm_api_key': os.getenv('LASTFM_API_KEY', '').strip(),
-        'spotify_client_id': os.getenv('SPOTIPY_CLIENT_ID', '').strip(),
-        'spotify_client_secret': os.getenv('SPOTIPY_CLIENT_SECRET', '').strip()
-    }
-    return credentials
+    if not os.path.exists(env_path):
+        # Create the file with blank values if it doesn't exist
+        with open(env_path, 'w') as f:
+            f.write("LASTFM_API_KEY=\n")
+            f.write("SPOTIFY_CLIENT_ID=\n")
+            f.write("SPOTIFY_CLIENT_SECRET=\n")
+        print(f"Created {env_path} with blank API credentials.")
 
-def prompt_credentials() -> dict:
-    """
-    Prompt the user to enter API credentials.
-    Saves them to the environment file.
-    Returns a dictionary with the entered credentials.
-    """
-    print("\nSome API credentials are missing. Please enter the required values.")
-    lastfm_api_key = getpass.getpass("Enter your Last.fm API Key: ").strip()
-    spotify_client_id = getpass.getpass("Enter your Spotify Client ID: ").strip()
-    spotify_client_secret = getpass.getpass("Enter your Spotify Client Secret: ").strip()
-
-    # Save to .env file
-    with open(ENV_FILE, 'a') as env_file:
-        if lastfm_api_key:
-            env_file.write(f'\nLASTFM_API_KEY={lastfm_api_key}')
-        if spotify_client_id:
-            env_file.write(f'\nSPOTIPY_CLIENT_ID={spotify_client_id}')
-        if spotify_client_secret:
-            env_file.write(f'\nSPOTIPY_CLIENT_SECRET={spotify_client_secret}')
-
-    credentials = {
+    load_dotenv(dotenv_path=env_path)
+    lastfm_api_key = os.getenv('LASTFM_API_KEY', '').strip()
+    spotify_client_id = os.getenv('SPOTIFY_CLIENT_ID', '').strip()
+    spotify_client_secret = os.getenv('SPOTIFY_CLIENT_SECRET', '').strip()
+    return {
         'lastfm_api_key': lastfm_api_key,
         'spotify_client_id': spotify_client_id,
         'spotify_client_secret': spotify_client_secret
     }
 
-    logging.info("API credentials saved to APIds.env.\n")
-    return credentials
-
-def get_or_prompt_credentials() -> dict:
+def save_api_credentials(env_path='APIds.env', credentials=None):
     """
-    Load credentials; if missing, prompt the user to enter them.
-    Returns a dictionary with credentials.
+    Save API credentials to the specified .env file.
     """
-    credentials = load_credentials()
-    if not all(credentials.values()):
-        credentials = prompt_credentials()
-    return credentials
+    if credentials is None:
+        credentials = {}
+    with open(env_path, 'w') as env_file:
+        env_file.write(f"LASTFM_API_KEY={credentials.get('lastfm_api_key', '')}\n")
+        env_file.write(f"SPOTIFY_CLIENT_ID={credentials.get('spotify_client_id', '')}\n")
+        env_file.write(f"SPOTIFY_CLIENT_SECRET={credentials.get('spotify_client_secret', '')}\n")
+    print(f"API credentials saved to {env_path}.")
 
-def interactive_menu(credentials):
+def prompt_for_credentials(credentials):
     """
-    Interactive menu for SpawnreDJ.
+    Prompt the user to input missing API credentials.
+    Updates the credentials dictionary in-place.
     """
-    print("\nWelcome to SpawnreDJ!")
-    while True:
-        print("\nOptions:")
-        print("1. Generate an M3U playlist from a folder")
-        print("2. Copy files from an M3U playlist to a new folder")
-        print("3. Analyze M3U for genre & audio features")
-        print("4. Generate a genre-clustered M3U playlist from a CSV file")
-        print()
+    if not credentials.get('lastfm_api_key'):
+        credentials['lastfm_api_key'] = getpass.getpass("Enter your Last.fm API Key: ").strip()
+    if not credentials.get('spotify_client_id'):
+        credentials['spotify_client_id'] = getpass.getpass("Enter your Spotify Client ID: ").strip()
+    if not credentials.get('spotify_client_secret'):
+        credentials['spotify_client_secret'] = getpass.getpass("Enter your Spotify Client Secret: ").strip()
 
-        choice = input("Enter your choice (or leave blank to exit): ").strip()
-        if choice == '1':
-            music_dir = input("Enter the path to the music directory: ").strip()
-            flip_input = input("Enter 'y' to flip or leave blank for default (Track - Artist): ").strip().lower()
-            flip = flip_input == 'y'
-            path_prefix_input = input("Enter the path prefix to add or leave blank for default ('../'): ").strip() or '../'
-            
-            # New addition: Ask for M3U filename, defaulting to 'playlist.m3u'
-            m3u_file_name = input("Enter the name for the playlist file (e.g., 'playlist.m3u') or leave blank for default: ").strip() or 'playlist.m3u'
-            
-            # Pass the correct file path to generate_m3u
-            m3u_file_path = os.path.abspath(os.path.join(music_dir, '..', m3u_file_name))
-            
-            generate_m3u(
-                music_dir=music_dir,
-                m3u_file_path=m3u_file_path,
-                flip_order=flip,
-                path_prefix=path_prefix_input
-            )
-        elif choice == '2':
-            m3u_file = input("Enter the path to the M3U playlist file: ").strip()
-            music_dir = input("Enter the path to the source music directory: ").strip()
-            output_folder = input("Enter the path to the destination folder: ").strip()
-            max_size_input = input("Enter the maximum cumulative size in GB (or leave blank for no limit): ").strip()
-            try:
-                max_size_gb = float(max_size_input) if max_size_input else None
-            except ValueError:
-                print("Invalid input for maximum size. Please enter a number.")
-                max_size_gb = None
-            copy_tracks_with_sequence(m3u_file, music_dir, output_folder, max_size_gb)
-        elif choice == '3':
-            # Ensure credentials are loaded
-            if not all(credentials.values()):
-                print("\nAPI credentials are required for this option.")
-                credentials = get_or_prompt_credentials()
+def run_m3u_from_folder(music_dir, flip, path_prefix='../'):
+    """
+    Wrapper function to generate an M3U playlist from a folder.
+    """
+    if not os.path.isdir(music_dir):
+        print(f"Error: The directory '{music_dir}' does not exist or is not a directory.")
+        return
 
-            m3u_file = input("Enter the path to the M3U playlist file: ").strip()
-            music_directory = input("Enter the root directory of the music files: ").strip()
-            generate_stats = input("Generate stats CSV? (y/n): ").strip().lower() == 'y'
-            fetch_features = input("Fetch Spotify audio features? (y/n): ").strip().lower() == 'y'
-            fetch_analysis = input("Fetch Spotify audio analysis data? (y/n): ").strip().lower() == 'y'
-            post = input("Skip genre extraction and use an existing CSV file? (y/n): ").strip().lower() == 'y'
-            loved_tracks = input("Enter the path to the loved tracks M3U file (or leave blank to skip): ").strip() or None
-            loved_albums = input("Enter the path to the loved albums M3U file (or leave blank to skip): ").strip() or None
-            loved_artists = input("Enter the path to the loved artists M3U file (or leave blank to skip): ").strip() or None
+    m3u_file_path = os.path.abspath(os.path.join(music_dir, '..', 'playlist.m3u'))
+    success = generate_m3u(music_dir, m3u_file_path, flip_order=flip, path_prefix=path_prefix)
+    if success:
+        print(f"Playlist generated at {m3u_file_path}")
 
-            run_analyze_m3u(credentials, SimpleNamespace(
-                m3u_file=m3u_file,
-                music_directory=music_directory,
-                stats=generate_stats,
-                features=fetch_features,
-                analysis=fetch_analysis,
-                post=post,
-                loved_tracks=loved_tracks,
-                loved_albums=loved_albums,
-                loved_artists=loved_artists
-            ))
-        elif choice == '4':
-            # Option 4 might require API credentials as well, depending on implementation
-            # Adjust accordingly if needed
-            pass
-        elif choice == '':
-            print("Exiting SpawnreDJ.")
-            break
-        else:
-            print("Invalid choice. Please try again.")
+def run_folder_from_m3u(m3u_file, music_dir, output_folder, max_size_gb=None):
+    """
+    Wrapper function to copy tracks from an M3U playlist to a new folder.
+    """
+    if not os.path.isfile(m3u_file):
+        print(f"Error: The M3U file '{m3u_file}' does not exist.")
+        return
+
+    if not os.path.isdir(music_dir):
+        print(f"Error: The music directory '{music_dir}' does not exist or is not a directory.")
+        return
+
+    if not os.path.isdir(output_folder):
+        try:
+            os.makedirs(output_folder, exist_ok=True)
+            print(f"Created output folder: {output_folder}")
+        except Exception as e:
+            print(f"Error creating output folder '{output_folder}': {e}")
+            return
+
+    success_count, failure_count = copy_tracks_with_sequence(m3u_file, music_dir, output_folder, max_size_gb)
+    print(f"Successfully copied {success_count} tracks.")
+    print(f"{failure_count} tracks failed to copy.")
 
 def run_analyze_m3u(credentials, args):
     """
     Wrapper function to analyze an M3U playlist for genres and audio features.
     """
-    # Check if API credentials are needed
-    if any([args.stats, args.features, args.analysis, args.loved_tracks, args.loved_albums, args.loved_artists]):
-        if not all(credentials.values()):
-            print("\nAPI credentials are required for analyzing M3U playlists.")
-            credentials = get_or_prompt_credentials()
-
     analyze_m3u(
         m3u_file=args.m3u_file,
         music_directory=args.music_directory,
@@ -176,13 +115,114 @@ def run_analyze_m3u(credentials, args):
         loved_artists=args.loved_artists
     )
 
+def run_spawnre_csv(csv_file, shuffle=False, loved=None):
+    """
+    Wrapper function for creating and ordering clusters and writing M3U file using the new spawnreDJ module.
+    """
+    csv_dir = os.path.dirname(os.path.abspath(csv_file))
+    
+    if loved:
+        loved_csv = os.path.join(csv_dir, os.path.splitext(os.path.basename(csv_file))[0] + '_loved.csv')
+        if not os.path.exists(loved_csv):
+            print(f"Loved CSV file '{loved_csv}' does not exist. Proceeding without loved filtering.")
+            loved_csv = None
+    else:
+        loved_csv = None
+    
+    args = SimpleNamespace(
+        csv_file=csv_file,
+        loved_csv=loved_csv,
+        shuffle=shuffle
+    )
+    
+    generate_curated_m3u(args)
+
+def run_generate_curated_playlist():
+    """
+    Run the generate curated M3U playlist from CSV option with prompts.
+    """
+    csv_file = input("Enter the path to the main CSV file (required): ").strip()
+    shuffle = input("Shuffle the tracks within each cluster? (y/n): ").strip().lower() == 'y'
+    loved_input = input("Filter by loved tracks, albums, or artists (e.g., 'tracks albums') or leave blank: ").strip()
+    loved = loved_input.split() if loved_input else None
+    run_spawnre_csv(csv_file=csv_file, shuffle=shuffle, loved=loved)
+
 def main():
-    """
-    Main entry point for SpawnreDJ.
-    """
-    # Initially load credentials, but do not prompt
-    credentials = load_credentials()
-    interactive_menu(credentials)
+    # Load API credentials
+    credentials = load_api_credentials()
+
+    # Check for missing credentials
+    missing_credentials = [key for key, value in credentials.items() if not value]
+    if missing_credentials:
+        print("Some API credentials are missing. Please enter the required values.")
+        prompt_for_credentials(credentials)
+        save_api_credentials(credentials=credentials)
+    else:
+        print("API credentials loaded from APIds.env.")
+
+    print("\nSpawnreDJ\n")
+    print("Welcome to SpawnreDJ!")
+    print("\nOptions:")
+    print("1. Generate an M3U playlist from a folder")
+    print("2. Copy files from an M3U playlist to a new folder")
+    print("3. Analyze M3U file for genre & audio features")
+    print("4. Generate a genre-clustered M3U playlist from a CSV file")
+
+    choice = input("\nEnter your choice (or leave blank to exit): ").strip()
+
+    if not choice:
+        print("Exiting SpawnreDJ.")
+        return
+
+    if choice == "1":
+        music_dir = input("Enter the path to the music directory: ").strip()
+        flip_input = input("Enter 'y' to flip or leave blank for default (Track - Artist): ").strip().lower()
+        flip = flip_input == 'y'
+        path_prefix_input = input("Enter the path prefix to add or leave blank for default ('../'): ").strip() or '../'
+        run_m3u_from_folder(music_dir, flip, path_prefix=path_prefix_input)
+    elif choice == "2":
+        m3u_file = input("Enter the path to the M3U playlist file: ").strip()
+        music_dir = input("Enter the path to the source music directory: ").strip()
+        output_folder = input("Enter the path to the destination folder: ").strip()
+        max_size_input = input("Enter the maximum cumulative size in GB (or leave blank for no limit): ").strip()
+        try:
+            max_size_gb = float(max_size_input) if max_size_input else None
+        except ValueError:
+            print("Invalid input for maximum size. Please enter a number.")
+            max_size_gb = None
+        run_folder_from_m3u(m3u_file, music_dir, output_folder, max_size_gb)
+    elif choice == "3":
+        m3u_file = input("Enter the path to the M3U playlist file: ").strip()
+        music_directory = input("Enter the root directory of the music files: ").strip()
+        generate_stats = input("Generate stats CSV? (y/n): ").strip().lower() == 'y'
+        fetch_features = input("Generate _features.csv file? (y/n): ").strip().lower() == 'y'
+        fetch_analysis = input("Fetch Spotify audio analysis data? (y/n): ").strip().lower() == 'y'
+        post = input("Skip genre extraction and use an existing CSV file? (y/n): ").strip().lower() == 'y'
+        loved_tracks = input("Enter the path to the loved tracks M3U file (or leave blank to skip): ").strip() or None
+        loved_albums = input("Enter the path to the loved albums M3U file (or leave blank to skip): ").strip() or None
+        loved_artists = input("Enter the path to the loved artists M3U file (or leave blank to skip): ").strip() or None
+        
+        # Create a SimpleNamespace object to hold the arguments
+        args = SimpleNamespace(
+            m3u_file=m3u_file,
+            music_directory=music_directory,
+            stats=generate_stats,
+            features=fetch_features,
+            analysis=fetch_analysis,
+            post=post,
+            loved_tracks=loved_tracks,
+            loved_albums=loved_albums,
+            loved_artists=loved_artists
+        )
+        run_analyze_m3u(credentials, args)
+    elif choice == "4":
+        csv_file = input("Enter the path to the main CSV file (required): ").strip()
+        shuffle = input("Shuffle the tracks within each cluster? (y/n): ").strip().lower() == 'y'
+        loved_input = input("Filter by loved tracks, albums, or artists (e.g., 'tracks albums') or leave blank: ").strip()
+        loved = loved_input.split() if loved_input else None
+        run_spawnre_csv(csv_file=csv_file, shuffle=shuffle, loved=loved)
+    else:
+        print("Invalid choice. Please select a valid option.")
 
 if __name__ == "__main__":
     main()
