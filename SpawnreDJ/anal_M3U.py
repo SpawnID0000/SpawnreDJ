@@ -35,14 +35,12 @@ genre_synonyms = {
     'rock and roll': 'rock & roll',
     'punk rock': 'punk',
     'alternative': 'alternative rock'
-    # Add more synonyms as needed
 }
 
 related_genre_map = {
     'funk rock': ['funk metal'],
     'alternative rock': ['alternative metal'],
     'metal': ['nu metal', 'thrash metal', 'thrash'],
-    # Add more related genres as needed
 }
 
 # Initialize caches
@@ -55,9 +53,6 @@ musicbrainzngs.set_format("json")
 
 
 def fetch_genre_lastfm(artist: str, track: str, api_key: str, retries: int = 3, delay: int = 5, timeout: int = 10) -> List[str]:
-    """
-    Fetch genres from Last.fm API for a given track and artist.
-    """
     url = f"https://ws.audioscrobbler.com/2.0/?method=track.getInfo&api_key={api_key}&artist={artist}&track={track}&format=json"
     for attempt in range(1, retries + 1):
         try:
@@ -83,14 +78,10 @@ def fetch_genre_lastfm(artist: str, track: str, api_key: str, retries: int = 3, 
 
 
 def get_spotify_genres(artist_name: str, sp: spotipy.Spotify, retries: int = 3, delay: int = 5) -> Tuple[List[str], List[str]]:
-    """
-    Fetch genres from Spotify API for a given artist.
-    Returns a tuple of (genres, genre_ids).
-    """
     if artist_name in spotify_genre_cache:
         logging.debug(f"Spotify genres for '{artist_name}' fetched from cache.")
         return spotify_genre_cache[artist_name]
-    
+
     for attempt in range(1, retries + 1):
         try:
             results = sp.search(q='artist:' + artist_name, type='artist')
@@ -98,7 +89,6 @@ def get_spotify_genres(artist_name: str, sp: spotipy.Spotify, retries: int = 3, 
             if artists:
                 artist = artists[0]
                 genres = artist['genres'][:5]  # Limit to 5 genres
-                # Spotify doesn't provide genre IDs; genres are strings
                 spotify_genre_cache[artist_name] = (genres, [])
                 logging.debug(f"Spotify genres extracted: {genres}")
                 return genres, []
@@ -122,15 +112,12 @@ def get_spotify_genres(artist_name: str, sp: spotipy.Spotify, retries: int = 3, 
 
 
 def get_musicbrainz_genres(artist_name: str) -> List[str]:
-    """
-    Fetch genres from MusicBrainz for a given artist.
-    """
     if artist_name in musicbrainz_genre_cache:
         logging.debug(f"MusicBrainz genres for '{artist_name}' fetched from cache.")
         return musicbrainz_genre_cache[artist_name]
-    
+
     logging.info(f"Fetching genres from MusicBrainz for artist: {artist_name}")
-    
+
     try:
         result = musicbrainzngs.search_artists(artist=artist_name, limit=1)
         if 'artists' in result and result['artists']:
@@ -182,9 +169,6 @@ def combine_and_prioritize_genres_refined(
     genre_synonyms: Dict[str, str], 
     artist_name: str
 ) -> List[str]:
-    """
-    Combine and prioritize genres from multiple sources.
-    """
     genre_count: Dict[str, int] = {}
     all_genres = [embedded_genre] + last_fm_genres + spotify_genres + musicbrainz_genres
 
@@ -202,31 +186,22 @@ def combine_and_prioritize_genres_refined(
     logging.debug(f"Single-source genres: {single_source_genres}")
 
     combined_genres = multi_source_genres[:5]
-
-    # Filter single-source genres
     single_source_filtered = [
         genre for genre in single_source_genres
         if genre.lower() != artist_name.lower() and any(value['Genre'].lower() == genre.lower() for value in genre_mapping.values())
     ]
-
     combined_genres += single_source_filtered[:5 - len(combined_genres)]
 
     combined_genres = combined_genres[:5]
-
     logging.debug(f"Final combined genres: {combined_genres}")
 
     return combined_genres
 
 
 def find_closest_genre_matches(genres: List[str], genre_mapping: Dict[str, Dict[str, str]], artist_name: str) -> Tuple[List[str], str]:
-    """
-    Find the closest genre matches from the provided genres based on genre_mapping.
-    Returns a tuple of (matched_genres, spawnre_hex).
-    """
     matched_genres = []
     spawnre_hex = "x"
 
-    # Predefined rock sub-genres to prioritize
     rock_related_genres = {
         'funk': 'funk rock',
         'piano': 'piano rock',
@@ -239,11 +214,9 @@ def find_closest_genre_matches(genres: List[str], genre_mapping: Dict[str, Dict[
 
     logging.debug(f"Initial genres: {genres}")
 
-    # Ensure "rock" is always included first if found
     if any('rock' in genre.lower() for genre in genres):
         matched_genres.append('rock')
 
-    # Add rock-related sub-genres if "rock" was found
     if 'rock' in matched_genres:
         for genre in genres:
             genre_lower = genre.lower()
@@ -251,7 +224,6 @@ def find_closest_genre_matches(genres: List[str], genre_mapping: Dict[str, Dict[
                 if sub_genre_key in genre_lower and sub_genre_value not in matched_genres:
                     matched_genres.append(sub_genre_value)
 
-    # Broad matching for remaining genres
     for genre in genres:
         genre_lower = genre.lower()
         if genre_lower and genre_lower not in matched_genres:
@@ -263,26 +235,22 @@ def find_closest_genre_matches(genres: List[str], genre_mapping: Dict[str, Dict[
         if len(matched_genres) == 5:
             break
 
-    # Sort matched genres based on their order in genre_mapping
     matched_genres.sort(
         key=lambda g: next((idx for idx, (k, v) in enumerate(genre_mapping.items()) if v['Genre'].lower() == g.lower()), len(genre_mapping))
     )
 
-    # Limit to 5 genres
     matched_genres = matched_genres[:5]
 
-    # Generate spawnre_hex
     for genre in matched_genres:
         for key, value in genre_mapping.items():
             if value['Genre'].lower() == genre.lower():
-                hex_part = value['Hex'][2:].zfill(2)  # Remove '0x' and ensure two characters
+                hex_part = value['Hex'][2:].zfill(2)
                 spawnre_hex += hex_part
                 break
-        if len(spawnre_hex) >= 10:  # Limit to 'x' + 10 characters
+        if len(spawnre_hex) >= 10:
             break
 
     spawnre_hex = spawnre_hex[:10]
-
     logging.debug(f"Matched genres: {matched_genres}, Spawnre Hex: {spawnre_hex}")
 
     return matched_genres, spawnre_hex
@@ -311,6 +279,78 @@ def determine_format_using_metadata(track_name: str, artist_name: str, file_path
     except Exception as e:
         logging.error(f"Error determining format using metadata for {file_path}: {e}")
         return 'Unknown'
+
+
+def parse_m3u_for_loved(m3u_file: str, music_directory: str) -> set:
+    """
+    Read an M3U file and return a set of absolute, normalized paths.
+    Resolves relative paths based on the provided music_directory.
+    """
+    loved_paths = set()
+    if os.path.exists(m3u_file):
+        with open(m3u_file, 'r', encoding='utf-8') as file:
+            for line in file:
+                line = line.strip()
+                if not line.startswith('#') and line:
+                    # Resolve relative paths to absolute paths
+                    if not os.path.isabs(line):
+                        path = os.path.join(music_directory, line)
+                    else:
+                        path = line
+                    # Normalize and lowercase the path for consistent comparison
+                    normalized_path = os.path.normpath(path).lower()
+                    loved_paths.add(normalized_path)
+    else:
+        logging.warning(f"Loved M3U file '{m3u_file}' does not exist.")
+    return loved_paths
+
+
+def process_m3u_with_loved(args: Any, loved_tracks: set, loved_albums: set, loved_artists: set) -> None:
+    """
+    Process the main playlist CSV and append loved metadata.
+    """
+    csv_file_path = os.path.splitext(args.m3u_file)[0] + '.csv'
+    output_csv_path = os.path.splitext(args.m3u_file)[0] + '_loved.csv'
+
+    try:
+        with open(csv_file_path, newline='', encoding='utf-8') as csvfile:
+            reader = csv.DictReader(csvfile)
+            fieldnames = reader.fieldnames + ['loved_tracks', 'loved_albums', 'loved_artists']
+            data = list(reader)  # Store all the data in a list for processing
+
+        with open(output_csv_path, 'w', newline='', encoding='utf-8') as csvfile:
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            writer.writeheader()
+
+            for track_data in data:
+                # Normalize the file path for comparison
+                file_path = track_data.get('file_path', '').lower()
+                normalized_file_path = os.path.normpath(file_path)
+
+                # Derive album and artist directories
+                album_dir = os.path.dirname(normalized_file_path)
+                album_dir_normalized = os.path.normpath(album_dir.lower())
+
+                artist_dir = os.path.dirname(album_dir)
+                artist_dir_normalized = os.path.normpath(artist_dir.lower())
+
+                # Check if the track, album, or artist is "loved"
+                is_loved_track = 'yes' if normalized_file_path in loved_tracks else 'no'
+                is_loved_album = 'yes' if album_dir_normalized in loved_albums else 'no'
+                is_loved_artist = 'yes' if artist_dir_normalized in loved_artists else 'no'
+
+                # Add the loved metadata
+                track_data['loved_tracks'] = is_loved_track
+                track_data['loved_albums'] = is_loved_album
+                track_data['loved_artists'] = is_loved_artist
+
+                # Write the updated row to the new CSV file
+                writer.writerow(track_data)
+
+        logging.info(f"Loved metadata CSV file created successfully: {output_csv_path}")
+
+    except Exception as e:
+        logging.error(f"Error processing loved metadata: {e}")
 
 
 def fetch_audio_features_to_csv(data: List[Dict[str, Any]], sp: spotipy.Spotify, output_csv_path: str, retries: int = 5) -> None:
@@ -344,7 +384,6 @@ def fetch_audio_features_to_csv(data: List[Dict[str, Any]], sp: spotipy.Spotify,
     # Collect all Spotify Track IDs
     track_ids = [track_data['spotify_track_ID'] for track_data in data if track_data.get('spotify_track_ID')]
 
-    # Batch track IDs into chunks
     batch_size = 50
     track_id_batches = [track_ids[i:i + batch_size] for i in range(0, len(track_ids), batch_size)]
 
@@ -388,284 +427,12 @@ def fetch_audio_features_to_csv(data: List[Dict[str, Any]], sp: spotipy.Spotify,
                 wait_time = retry_after + jitter
                 logging.warning(f"Rate limit exceeded. Waiting for {wait_time:.2f} seconds.")
                 time.sleep(wait_time)
-                continue
-            else:
-                logging.error(f"Spotify API error: {e}. Skipping batch {batch_num}.")
         except Exception as e:
             logging.error(f"Unexpected error while fetching audio features for batch {batch_num}: {e}")
 
-        # Introduce a small delay to respect API rate limits
         time.sleep(random.uniform(0.5, 1.5))
 
     logging.info("Audio features fetching complete.")
-
-
-def parse_m3u_for_loved(m3u_file: str, music_directory: str) -> set:
-    """
-    Read an M3U file and return a set of absolute, normalized paths.
-    Resolves relative paths based on the provided music_directory.
-    """
-    loved_paths = set()
-    if os.path.exists(m3u_file):
-        with open(m3u_file, 'r', encoding='utf-8') as file:
-            for line in file:
-                line = line.strip()
-                if not line.startswith('#') and line:
-                    # Resolve relative paths to absolute paths
-                    if not os.path.isabs(line):
-                        path = os.path.join(music_directory, line)
-                    else:
-                        path = line
-                    # Normalize and lowercase the path for consistent comparison
-                    normalized_path = os.path.normpath(path).lower()
-                    loved_paths.add(normalized_path)
-    else:
-        logging.warning(f"Loved M3U file '{m3u_file}' does not exist.")
-    return loved_paths
-
-
-def process_m3u_with_loved(args: Any, loved_tracks: set, loved_albums: set, loved_artists: set) -> None:
-    """
-    Process the main playlist CSV and append loved metadata.
-    """
-    # Load the original CSV generated from the main analyze function
-    csv_file_path = os.path.splitext(args.m3u_file)[0] + '.csv'
-    output_csv_path = os.path.splitext(args.m3u_file)[0] + '_loved.csv'
-
-    try:
-        with open(csv_file_path, newline='', encoding='utf-8') as csvfile:
-            reader = csv.DictReader(csvfile)
-            fieldnames = reader.fieldnames + ['loved_tracks', 'loved_albums', 'loved_artists']
-            data = list(reader)  # Store all the data in a list for processing
-
-        with open(output_csv_path, 'w', newline='', encoding='utf-8') as csvfile:
-            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-            writer.writeheader()
-
-            for track_data in data:
-                # Normalize the file path for comparison
-                file_path = track_data.get('file_path', '').lower()
-                normalized_file_path = os.path.normpath(file_path)
-
-                # Derive album and artist directories
-                album_dir = os.path.dirname(normalized_file_path)  # /music_dir/artist/album
-                album_dir_normalized = os.path.normpath(album_dir.lower())
-
-                artist_dir = os.path.dirname(album_dir)  # /music_dir/artist
-                artist_dir_normalized = os.path.normpath(artist_dir.lower())
-
-                # Check if the track, album, or artist is "loved"
-                is_loved_track = 'yes' if normalized_file_path in loved_tracks else 'no'
-                is_loved_album = 'yes' if album_dir_normalized in loved_albums else 'no'
-                is_loved_artist = 'yes' if artist_dir_normalized in loved_artists else 'no'
-
-                # Add the loved metadata
-                track_data['loved_tracks'] = is_loved_track
-                track_data['loved_albums'] = is_loved_album
-                track_data['loved_artists'] = is_loved_artist
-
-                # Write the updated row to the new CSV file
-                writer.writerow(track_data)
-
-        logging.info(f"Loved metadata CSV file created successfully: {output_csv_path}")
-
-    except Exception as e:
-        logging.error(f"Error processing loved metadata: {e}")
-
-
-def fetch_audio_analysis_to_csv(data: List[Dict[str, Any]], sp: spotipy.Spotify, output_csv_path: str, retries: int = 5) -> None:
-    """
-    Fetch audio analysis data for tracks and write the results to a separate CSV file.
-    """
-    analysis_csv_path = os.path.splitext(output_csv_path)[0] + '_analysis.csv'
-
-    # Check if analysis CSV file exists and load it if -post is used
-    existing_analysis = {}
-    if os.path.exists(analysis_csv_path):
-        try:
-            with open(analysis_csv_path, 'r', newline='', encoding='utf-8') as csvfile:
-                reader = csv.DictReader(csvfile)
-                for row in reader:
-                    existing_analysis[row['spotify_track_ID']] = row  # Save rows based on track ID
-            logging.info(f"Resuming from existing analysis file: {analysis_csv_path}")
-        except Exception as e:
-            logging.error(f"Error reading analysis CSV file '{analysis_csv_path}': {e}")
-
-    # Define the fieldnames including new genre columns and audio analysis columns
-    fieldnames = [
-        'artist', 'album', 'track', 'year', 'spawnre', 'spawnre_hex',
-        'musicbrainz_artist_ID', 'musicbrainz_release_group_ID', 'musicbrainz_track_ID',
-        'spotify_artist_ID', 'spotify_track_ID',
-        'file_duration_ms', 'spotify_duration_ms', 
-        'embedded_genre', 'spawnre_tag', 'file_path',
-        'spotify_genre_1', 'spotify_genre_2', 'spotify_genre_3', 'spotify_genre_4', 'spotify_genre_5',
-        'last_FM_genre_1', 'last_FM_genre_2', 'last_FM_genre_3', 'last_FM_genre_4', 'last_FM_genre_5',
-        'musicbrainz_genre_1', 'musicbrainz_genre_2', 'musicbrainz_genre_3', 'musicbrainz_genre_4', 'musicbrainz_genre_5',
-        # Audio analysis columns
-        'loudness_range', 'section_start', 'section_duration',
-        'segment_loudness_start', 'segment_start', 'segment_duration'
-    ]
-
-    # Initialize the analysis CSV with headers if it doesn't exist
-    if not os.path.exists(analysis_csv_path):
-        try:
-            with open(analysis_csv_path, 'w', newline='', encoding='utf-8') as csvfile:
-                writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-                writer.writeheader()
-            logging.info(f"Created analysis CSV file with headers: {analysis_csv_path}")
-        except Exception as e:
-            logging.error(f"Error initializing analysis CSV file '{analysis_csv_path}': {e}")
-            return
-
-    logging.info(f"Fetching audio analysis for {len(data)} tracks...")
-
-    for track_num, track_data in enumerate(data, start=1):
-        spotify_track_id = track_data.get('spotify_track_ID')
-        if not spotify_track_id:
-            logging.warning(f"No Spotify Track ID found for {track_data['track']}. Skipping.")
-            continue
-
-        # Skip tracks already processed in the existing _analysis.csv
-        if spotify_track_id in existing_analysis:
-            logging.info(f"Skipping already processed track: {track_data['track']} (ID: {spotify_track_id})")
-            continue
-
-        logging.info(f"\nProcessing track {track_num}/{len(data)}: Spotify Track ID: {spotify_track_id}")
-
-        attempt = 0
-        success = False  # Flag to track success
-
-        while attempt < retries:
-            try:
-                logging.info(f"Attempt {attempt + 1} to fetch audio analysis for track ID: {spotify_track_id}")
-                analysis = sp.audio_analysis(spotify_track_id)
-                if analysis:
-                    # Collect section and segment data
-                    sections = analysis.get('sections', [])
-                    segments = analysis.get('segments', [])
-
-                    if sections:
-                        loudness_range = sections[0].get('loudness_range', '')
-                        section_start = sections[0].get('start', '')
-                        section_duration = sections[0].get('duration', '')
-                        track_data.update({
-                            'loudness_range': loudness_range,
-                            'section_start': section_start,
-                            'section_duration': section_duration
-                        })
-                    if segments:
-                        segment_loudness_start = segments[0].get('loudness_start', '')
-                        segment_start = segments[0].get('start', '')
-                        segment_duration = segments[0].get('duration', '')
-                        track_data.update({
-                            'segment_loudness_start': segment_loudness_start,
-                            'segment_start': segment_start,
-                            'segment_duration': segment_duration
-                        })
-                    success = True
-                    logging.debug(f"Audio analysis fetched successfully for track ID: {spotify_track_id}.")
-
-                    # Append the processed track's data to the analysis CSV
-                    try:
-                        with open(analysis_csv_path, 'a', newline='', encoding='utf-8') as csvfile:
-                            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-                            writer.writerow({k: track_data.get(k, '') for k in fieldnames})  # Write track data
-                        logging.debug(f"Audio analysis written for track ID: {spotify_track_id}.")
-                    except Exception as e:
-                        logging.error(f"Error writing to analysis CSV file '{analysis_csv_path}': {e}")
-
-                    break  # Exit loop on success
-                else:
-                    logging.warning(f"Failed to fetch audio analysis for {spotify_track_id}.")
-            except spotipy.exceptions.SpotifyException as e:
-                if e.http_status == 429:  # Handling API throttle (rate limit)
-                    retry_after = int(e.headers.get('Retry-After', 60))  # Default to 60 seconds
-                    jitter = random.uniform(0, 1)  # Add a small jitter
-                    wait_time = retry_after + jitter
-                    logging.warning(f"Rate limit encountered (HTTP 429). Retrying after {wait_time:.2f} seconds...")
-                    time.sleep(wait_time)
-                    attempt += 1
-                else:
-                    logging.error(f"Spotify API error: {e}")
-                    break
-            except http.client.RemoteDisconnected as e:  # Handling connection errors
-                logging.warning(f"RemoteDisconnected error: {e}. Retrying ({attempt + 1}/{retries})...")
-                time.sleep(random.uniform(1, 3))  # Random delay to reduce strain on the server
-                attempt += 1
-            except Exception as e:  # Catch-all for any other exceptions
-                logging.error(f"Unexpected error: {e}")
-                break
-
-        if not success:
-            logging.warning(f"Max retries reached. Failed to fetch audio analysis for track {spotify_track_id}.")
-
-            # Implement 3 retries with exponential backoff (1 min, 2 min, 4 min) before prompting the user
-            max_backoff_retries = 3
-            base_backoff_time = 60  # Start with 1 minute
-
-            for retry in range(max_backoff_retries):
-                retry_delay = base_backoff_time * (2 ** retry)  # Exponential backoff
-                logging.info(f"Retrying in {retry_delay // 60} minute(s)...")
-                time.sleep(retry_delay)
-
-                attempt = 0
-                try:
-                    logging.info(f"Retry {retry + 1}/{max_backoff_retries} for track {spotify_track_id}.")
-                    analysis = sp.audio_analysis(spotify_track_id)
-                    if analysis:
-                        # Collect section and segment data
-                        sections = analysis.get('sections', [])
-                        segments = analysis.get('segments', [])
-
-                        if sections:
-                            loudness_range = sections[0].get('loudness_range', '')
-                            section_start = sections[0].get('start', '')
-                            section_duration = sections[0].get('duration', '')
-                            track_data.update({
-                                'loudness_range': loudness_range,
-                                'section_start': section_start,
-                                'section_duration': section_duration
-                            })
-                        if segments:
-                            segment_loudness_start = segments[0].get('loudness_start', '')
-                            segment_start = segments[0].get('start', '')
-                            segment_duration = segments[0].get('duration', '')
-                            track_data.update({
-                                'segment_loudness_start': segment_loudness_start,
-                                'segment_start': segment_start,
-                                'segment_duration': segment_duration
-                            })
-                        success = True
-                        logging.debug(f"Audio analysis fetched successfully for track ID: {spotify_track_id} on retry {retry + 1}.")
-
-                        # Append the processed track's data to the analysis CSV
-                        try:
-                            with open(analysis_csv_path, 'a', newline='', encoding='utf-8') as csvfile:
-                                writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-                                writer.writerow({k: track_data.get(k, '') for k in fieldnames})  # Write track data
-                            logging.debug(f"Audio analysis written for track ID: {spotify_track_id} on retry {retry + 1}.")
-                        except Exception as e:
-                            logging.error(f"Error writing to analysis CSV file '{analysis_csv_path}': {e}")
-
-                        break  # Exit loop on success
-                    else:
-                        logging.warning(f"Failed to fetch audio analysis for track {spotify_track_id} on retry {retry + 1}.")
-                except Exception as e:
-                    logging.error(f"Unexpected error during retry {retry + 1}: {e}")
-
-            if not success:
-                logging.warning(f"Retries failed for track {spotify_track_id}.")
-                user_input = input("Do you want to retry (y) or continue to the next track (n)? ").lower().strip()
-                if user_input == 'y':
-                    # Reset the loop to retry again
-                    logging.info(f"Retrying track {spotify_track_id} as per user request.")
-                    data.remove(track_data)  # Remove from data to reprocess
-                    data.append(track_data)  # Re-add to process again
-                else:
-                    logging.info(f"Continuing to the next track without analysis for {spotify_track_id}.")
-
-        # Introduce delay between API calls to avoid rapid consecutive requests
-        time.sleep(random.uniform(0.5, 1.5))
 
 
 def analyze_m3u(
@@ -702,7 +469,10 @@ def analyze_m3u(
     logging.info(f"\nTotal number of tracks: {total_tracks}\n")
 
     data: List[Dict[str, Any]] = []
+    
+    # Initialize stats dictionary
     stats = {'Total Tracks': 0, 'Tracks with Genres': 0}
+
     genre_counts = {value['Genre'].lower(): 0 for key, value in genre_mapping.items() if value['Genre']}
 
     # Dictionary to store sub-genre counts for each artist
@@ -923,12 +693,17 @@ def analyze_m3u(
         try:
             with open(stats_csv_path, 'w', newline='', encoding='utf-8') as csvfile:
                 writer = csv.writer(csvfile)
+                
+                # Write basic statistics
                 writer.writerow(['Statistic', 'Count'])
-                for key, value in stats.items():
-                    writer.writerow([key, value])
+                writer.writerow(['Total Tracks', stats['Total Tracks']])
+                writer.writerow(['Tracks with Genres', stats['Tracks with Genres']])
                 writer.writerow([])  # Blank line
+                
+                # Write genre occurrence stats
                 writer.writerow(['Genre', 'Hex Value', 'Occurrences'])
-
+                
+                # Sort genres by occurrence count, highest first
                 sorted_genres = sorted(
                     [
                         (
@@ -937,12 +712,13 @@ def analyze_m3u(
                             count
                         ) 
                         for genre, count in genre_counts.items() 
-                        if count > 0
+                        if count > 0  # Only include genres that occurred
                     ],
-                    key=lambda x: x[2],
+                    key=lambda x: x[2],  # Sort by count (occurrences)
                     reverse=True
                 )
 
+                # Write each genre's stats to the CSV
                 for genre, hex_value, count in sorted_genres:
                     writer.writerow([genre, hex_value, count])
 
