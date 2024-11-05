@@ -1,12 +1,13 @@
 # M3U_from_CSV.py
 
 import pandas as pd
-import os
 import random
 import logging
 import csv
 from types import SimpleNamespace
-from typing import Any, Optional
+from typing import Any, Optional, Dict, List, Tuple
+
+from pathlib import Path
 
 # Import the genre mapping dictionary from dic_spawnre.py
 from SpawnreDJ.dic_spawnre import genre_mapping
@@ -25,6 +26,33 @@ cluster_transition_logic = {
     'electronic': ['hip-hop', 'pop'],
     'classical': ['jazz', 'acoustic rock']
 }
+
+# Initialize module-specific logger
+logger = logging.getLogger(__name__)
+
+
+def sanitize_path(path: str) -> Path:
+    """
+    Sanitize the input path by removing backslashes before spaces and normalizing the path.
+    
+    Args:
+        path (str): The original path string input by the user.
+        
+    Returns:
+        Path: The sanitized Path object.
+    """
+    # Replace escaped spaces (\ ) with regular spaces
+    sanitized = path.replace('\\ ', ' ')
+    
+    # Additionally, handle other common escape characters if necessary
+    # For example, replace double backslashes with single backslash
+    sanitized = sanitized.replace('\\\\', '\\')
+    
+    # Create a Path object and normalize it
+    sanitized_path = Path(sanitized).expanduser().resolve()
+    
+    return sanitized_path
+
 
 def get_genres_from_hex(hex_code: str) -> list:
     """
@@ -45,13 +73,14 @@ def get_genres_from_hex(hex_code: str) -> list:
                 genres.append(value['Genre'])
     return genres
 
-def create_clusters(df: pd.DataFrame, loved_csv: Optional[str] = None) -> dict:
+
+def create_clusters(df: pd.DataFrame, loved_csv: Optional[Path] = None) -> dict:
     """
     Creates clusters of tracks based on genre and optionally filters by loved status.
     
     Args:
         df (pd.DataFrame): The DataFrame containing track information.
-        loved_csv (str, optional): Path to the _loved.csv file for filtering. Defaults to None.
+        loved_csv (Path, optional): Path to the _loved.csv file for filtering. Defaults to None.
     
     Returns:
         dict: A dictionary where keys are genres and values are lists of track file paths.
@@ -60,7 +89,7 @@ def create_clusters(df: pd.DataFrame, loved_csv: Optional[str] = None) -> dict:
 
     # Load the _loved.csv file if provided to filter by loved status
     loved_options = {}
-    if loved_csv and os.path.exists(loved_csv):
+    if loved_csv and loved_csv.exists():
         loved_df = pd.read_csv(loved_csv)
         loved_options = {
             'tracks': loved_df['loved_tracks'].str.lower() == 'yes',
@@ -68,7 +97,7 @@ def create_clusters(df: pd.DataFrame, loved_csv: Optional[str] = None) -> dict:
             'artists': loved_df['loved_artists'].str.lower() == 'yes'
         }
 
-    logging.info(f"Processing {len(df)} rows from the CSV file.")
+    logger.info(f"Processing {len(df)} rows from the CSV file.")
 
     for index, row in df.iterrows():
         # Extract genre from either 'spawnre_tag' or 'embedded_genre'
@@ -91,8 +120,9 @@ def create_clusters(df: pd.DataFrame, loved_csv: Optional[str] = None) -> dict:
             # If no loved filtering is applied, add all tracks
             clusters[genre].append(row['file_path'])
 
-    logging.info(f"Created {len(clusters)} genre clusters.")
+    logger.info(f"Created {len(clusters)} genre clusters.")
     return clusters
+
 
 def order_clusters(clusters: dict, shuffle: bool = False) -> list:
     """
@@ -117,29 +147,37 @@ def order_clusters(clusters: dict, shuffle: bool = False) -> list:
 
     return ordered_clusters
 
-def write_m3u(ordered_clusters: list, output_file: str, root_directory: str, path_prefix: str = '../') -> list:
+
+def write_m3u(ordered_clusters: list, output_file: Path, root_directory: Path, path_prefix: str = '../') -> list:
     """
     Writes the ordered genre clusters into an M3U playlist file with relative paths.
     
     Args:
         ordered_clusters (list): List of tuples containing genre and tracks.
-        output_file (str): Path to the output M3U file.
-        root_directory (str): The root directory to calculate relative paths.
+        output_file (Path): Path to the output M3U file.
+        root_directory (Path): The root directory to calculate relative paths.
         path_prefix (str, optional): Prefix to add to each path in the playlist. Defaults to '../'.
     
     Returns:
         list: The ordered_clusters list for further use if needed.
     """
-    with open(output_file, 'w', encoding='utf-8') as f:
+    with output_file.open('w', encoding='utf-8') as f:
         f.write("#EXTM3U\n")
         for genre, tracks in ordered_clusters:
             f.write(f"# Genre: {genre}\n")
             for absolute_path in tracks:
-                # Convert absolute path to relative path based on the root_directory
-                relative_path = os.path.relpath(absolute_path, root_directory)
+                absolute_path_obj = Path(absolute_path)
+                if not absolute_path_obj.is_absolute():
+                    absolute_path_obj = (root_directory / absolute_path).resolve()
+                try:
+                    relative_path = absolute_path_obj.relative_to(root_directory)
+                except ValueError:
+                    # If absolute_path is not under root_directory, use absolute path
+                    relative_path = absolute_path_obj
                 # Prepend the path prefix to the relative path
-                f.write(f"{path_prefix}{relative_path}\n")
+                f.write(f"{path_prefix}{relative_path.as_posix()}\n")
     return ordered_clusters
+
 
 def print_summary(ordered_clusters: list) -> None:
     """
@@ -152,34 +190,33 @@ def print_summary(ordered_clusters: list) -> None:
     for genre, tracks in ordered_clusters:
         print(f"- {genre}: {len(tracks)} tracks")
 
-def parse_m3u_for_loved(m3u_file: str, music_directory: str) -> set:
+
+def parse_m3u_for_loved(m3u_file: Path, music_directory: Path) -> set:
     """
     Parses a loved M3U file and returns a set of absolute, normalized file paths.
     
     Args:
-        m3u_file (str): Path to the loved M3U file.
-        music_directory (str): Root directory of the music files to resolve relative paths.
+        m3u_file (Path): Path to the loved M3U file.
+        music_directory (Path): Root directory of the music files to resolve relative paths.
     
     Returns:
         set: A set of normalized file paths that are marked as loved.
     """
     loved_paths = set()
-    if os.path.exists(m3u_file):
-        with open(m3u_file, 'r', encoding='utf-8') as file:
+    if m3u_file.exists():
+        with m3u_file.open('r', encoding='utf-8') as file:
             for line in file:
                 line = line.strip()
                 if line and not line.startswith("#"):
                     # Resolve relative paths to absolute paths
-                    if not os.path.isabs(line):
-                        path = os.path.join(music_directory, line)
-                    else:
-                        path = line
+                    track_path = (music_directory / line).resolve() if not Path(line).is_absolute() else Path(line).resolve()
                     # Normalize and lowercase the path for consistent comparison
-                    normalized_path = os.path.normpath(path).lower()
+                    normalized_path = track_path.as_posix().lower()
                     loved_paths.add(normalized_path)
     else:
-        logging.warning(f"Loved M3U file '{m3u_file}' does not exist.")
+        logger.warning(f"Loved M3U file '{m3u_file}' does not exist.")
     return loved_paths
+
 
 def process_m3u_with_loved(args: Any, loved_tracks: set, loved_albums: set, loved_artists: set) -> None:
     """
@@ -192,33 +229,33 @@ def process_m3u_with_loved(args: Any, loved_tracks: set, loved_albums: set, love
         loved_artists (set): Set of loved artist directory paths.
     """
     # Define paths based on the m3u_file
-    csv_file_path = os.path.splitext(args.m3u_file)[0] + '.csv'
-    output_csv_path = os.path.splitext(args.m3u_file)[0] + '_loved.csv'
+    csv_file_path = Path(args.m3u_file).with_suffix('.csv')
+    output_csv_path = Path(args.m3u_file).with_stem(csv_file_path.stem + '_loved').with_suffix('.csv')
 
     try:
-        with open(csv_file_path, newline='', encoding='utf-8') as csvfile:
+        with csv_file_path.open('r', newline='', encoding='utf-8') as csvfile:
             reader = csv.DictReader(csvfile)
             fieldnames = reader.fieldnames + ['loved_tracks', 'loved_albums', 'loved_artists']
             data = list(reader)  # Store all the data in a list for processing
 
-        with open(output_csv_path, 'w', newline='', encoding='utf-8') as csvfile:
+        with output_csv_path.open('w', newline='', encoding='utf-8') as csvfile:
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
             writer.writeheader()
 
             for track_data in data:
                 # Normalize the file path for comparison
-                file_path = track_data.get('file_path', '').lower()
-                normalized_file_path = os.path.normpath(file_path)
+                file_path = Path(track_data.get('file_path', '')).as_posix().lower()
+                normalized_file_path = Path(file_path)
 
                 # Derive album and artist directories
-                album_dir = os.path.dirname(normalized_file_path)
-                album_dir_normalized = os.path.normpath(album_dir.lower())
+                album_dir = normalized_file_path.parent
+                album_dir_normalized = album_dir.as_posix().lower()
 
-                artist_dir = os.path.dirname(album_dir)
-                artist_dir_normalized = os.path.normpath(artist_dir.lower())
+                artist_dir = album_dir.parent
+                artist_dir_normalized = artist_dir.as_posix().lower()
 
                 # Check if the track, album, or artist is "loved"
-                is_loved_track = 'yes' if normalized_file_path in loved_tracks else 'no'
+                is_loved_track = 'yes' if file_path in loved_tracks else 'no'
                 is_loved_album = 'yes' if album_dir_normalized in loved_albums else 'no'
                 is_loved_artist = 'yes' if artist_dir_normalized in loved_artists else 'no'
 
@@ -230,10 +267,11 @@ def process_m3u_with_loved(args: Any, loved_tracks: set, loved_albums: set, love
                 # Write the updated row to the new CSV file
                 writer.writerow(track_data)
 
-        logging.info(f"Loved metadata CSV file created successfully: {output_csv_path}")
+        logger.info(f"Loved metadata CSV file created successfully: {output_csv_path}")
 
     except Exception as e:
-        logging.error(f"Error processing loved metadata: {e}")
+        logger.error(f"Error processing loved metadata: {e}")
+
 
 def generate_curated_m3u(args: Any) -> None:
     """
@@ -241,15 +279,18 @@ def generate_curated_m3u(args: Any) -> None:
     
     Args:
         args (Any): A SimpleNamespace object containing:
-                    - csv_file (str): Path to the input CSV file.
-                    - loved_csv (str, optional): Path to the _loved.csv file.
+                    - csv_file (Path): Path to the input CSV file.
+                    - loved_csv (Path, optional): Path to the _loved.csv file.
                     - shuffle (bool): Whether to shuffle tracks within clusters.
     """
+    # Ensure csv_file is treated as a Path object
+    csv_file = Path(args.csv_file)
+
     # Load the CSV file into a DataFrame
     try:
-        df = pd.read_csv(args.csv_file, delimiter=',', on_bad_lines='skip', quoting=1)  # Handle commas
+        df = pd.read_csv(csv_file, delimiter=',', on_bad_lines='skip', quoting=1)  # Handle commas
     except Exception as e:
-        logging.error(f"Error reading CSV file '{args.csv_file}': {e}")
+        logger.error(f"Error reading CSV file '{csv_file}': {e}")
         return
 
     # Clean up column names
@@ -262,21 +303,31 @@ def generate_curated_m3u(args: Any) -> None:
     ordered_clusters = order_clusters(clusters, shuffle=args.shuffle)
 
     # Write output M3U playlist
-    output_file = args.csv_file.replace('.csv', '_curated.m3u')
-    ordered_clusters = write_m3u(ordered_clusters, output_file, root_directory=os.path.dirname(args.csv_file))
+    output_file = csv_file.with_name(csv_file.stem + '_curated.m3u')
+    ordered_clusters = write_m3u(ordered_clusters, output_file, root_directory=csv_file.parent)
 
     print(f"Curated M3U playlist created: {output_file}")
 
     # Print cluster summary in the same order as the M3U file
     print_summary(ordered_clusters)
 
+
 if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="Generate a curated M3U playlist from a CSV file.")
-    parser.add_argument("csv_file", help="Path to the input CSV file")
-    parser.add_argument("-loved_csv", help="Path to the _loved.csv file (optional)", default=None)
+    parser.add_argument("csv_file", type=str, help="Path to the input CSV file")
+    parser.add_argument("-loved_csv", type=str, help="Path to the _loved.csv file (optional)", default=None)
     parser.add_argument("-shuffle", action="store_true", help="Shuffle the tracks within each cluster")
 
     args = parser.parse_args()
-    generate_curated_m3u(args)
+
+    # Sanitize input paths
+    sanitized_csv_file = sanitize_path(args.csv_file)
+    sanitized_loved_csv = sanitize_path(args.loved_csv) if args.loved_csv else None
+
+    generate_curated_m3u(SimpleNamespace(
+        csv_file=sanitized_csv_file,
+        loved_csv=sanitized_loved_csv,
+        shuffle=args.shuffle
+    ))
