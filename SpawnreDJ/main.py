@@ -13,7 +13,7 @@ from pathlib import Path
 
 # Configure logging
 logging.basicConfig(
-    level=logging.INFO,  # Set to INFO to suppress DEBUG messages
+    level=logging.DEBUG,  # Set to INFO to suppress DEBUG messages
     format="%(asctime)s - %(levelname)s - %(message)s",
     handlers=[
         logging.StreamHandler()  # Output logs to console
@@ -150,7 +150,8 @@ def run_spawnre_csv(csv_file, shuffle=False, loved=None):
     args = SimpleNamespace(
         csv_file=csv_file,
         loved_csv=loved_csv,  # Pass as Path object
-        shuffle=shuffle
+        shuffle=shuffle,
+        loved=loved  # Ensure 'loved' is added to args here
     )
     
     generate_curated_m3u(args)
