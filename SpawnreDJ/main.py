@@ -135,9 +135,6 @@ def run_analyze_m3u(credentials, args):
 
 
 def run_spawnre_csv(csv_file, shuffle=False, loved=None):
-    """
-    Wrapper function for creating and ordering clusters and writing M3U file using the new spawnreDJ module.
-    """
     csv_dir = os.path.dirname(os.path.abspath(csv_file))
     
     if loved:
@@ -145,12 +142,14 @@ def run_spawnre_csv(csv_file, shuffle=False, loved=None):
         if not os.path.exists(loved_csv):
             print(f"Loved CSV file '{loved_csv}' does not exist. Proceeding without loved filtering.")
             loved_csv = None
+        else:
+            loved_csv = Path(loved_csv)  # Convert to Path object here
     else:
         loved_csv = None
     
     args = SimpleNamespace(
         csv_file=csv_file,
-        loved_csv=loved_csv,
+        loved_csv=loved_csv,  # Pass as Path object
         shuffle=shuffle
     )
     
