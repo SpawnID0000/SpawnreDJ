@@ -100,24 +100,26 @@ def create_clusters(df: pd.DataFrame, loved_csv: Optional[Path] = None) -> dict:
     logger.info(f"Processing {len(df)} rows from the CSV file.")
 
     for index, row in df.iterrows():
-        # Extract genre from either 'spawnre_tag' or 'embedded_genre'
         genre = row.get('spawnre_tag') or row.get('embedded_genre', 'Unknown')
-
-        # Initialize cluster if it doesn't exist
+        
         if genre not in clusters:
             clusters[genre] = []
 
-        # Handle loved status (if applicable)
+        # Check loved filtering
         if loved_csv:
-            is_loved_track = loved_options.get('tracks', pd.Series([False])).iloc[index] if 'loved_tracks' in row else False
-            is_loved_album = loved_options.get('albums', pd.Series([False])).iloc[index] if 'loved_albums' in row else False
-            is_loved_artist = loved_options.get('artists', pd.Series([False])).iloc[index] if 'loved_artists' in row else False
+            # Verify if 'loved_tracks' is being correctly identified in loved_options
+            if 'tracks' in loved_options:
+                is_loved_track = loved_options['tracks'].iloc[index] == True
+                logger.debug(f"Track: {row['file_path']} - Genre: {genre} - Loved Track Status: {is_loved_track}")
+            else:
+                logger.warning(f"loved_options does not contain 'tracks' column for row {index}")
 
-            # Add the track to the cluster if it meets the loved criteria
-            if is_loved_track or is_loved_album or is_loved_artist:
+            if is_loved_track:
                 clusters[genre].append(row['file_path'])
+                logger.info(f"Added track '{row['file_path']}' to '{genre}' (loved track)")
+            else:
+                logger.debug(f"Skipped track '{row['file_path']}' for genre '{genre}' (not marked as loved)")
         else:
-            # If no loved filtering is applied, add all tracks
             clusters[genre].append(row['file_path'])
 
     logger.info(f"Created {len(clusters)} genre clusters.")
