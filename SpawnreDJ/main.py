@@ -13,7 +13,7 @@ from pathlib import Path
 
 # Configure logging
 logging.basicConfig(
-    level=logging.DEBUG,  # Set to INFO to suppress DEBUG messages
+    level=logging.INFO,  # Set to INFO to suppress DEBUG messages
     format="%(asctime)s - %(levelname)s - %(message)s",
     handlers=[
         logging.StreamHandler()  # Output logs to console
