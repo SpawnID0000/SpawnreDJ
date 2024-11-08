@@ -157,17 +157,6 @@ def run_spawnre_csv(csv_file, shuffle=False, loved=None):
     generate_curated_m3u(args)
 
 
-def run_generate_curated_playlist():
-    """
-    Run the generate curated M3U playlist from CSV option with prompts.
-    """
-    csv_file = input("Enter the path to the main CSV file (required): ").strip()
-    shuffle = input("Shuffle the tracks within each cluster? (y/n): ").strip().lower() == 'y'
-    loved_input = input("Filter by loved tracks, albums, or artists (e.g., 'tracks albums') or leave blank: ").strip()
-    loved = loved_input.split() if loved_input else None
-    run_spawnre_csv(csv_file=csv_file, shuffle=shuffle, loved=loved)
-
-
 def main():
     # Load API credentials
     credentials = load_api_credentials()
@@ -217,11 +206,6 @@ def main():
         music_dir = input("Enter the path to the source music directory: ").strip()
         output_folder = input("Enter the path to the destination folder: ").strip()
         max_size_input = input("Enter the maximum cumulative size in GB (or leave blank for no limit): ").strip()
-        
-        # Handle Backslashes in Paths by Replacing '\\ ' with ' '
-        music_dir = music_dir.replace('\\ ', ' ')
-        m3u_file = m3u_file.replace('\\ ', ' ')
-        output_folder = output_folder.replace('\\ ', ' ')
         
         # Normalize and Resolve Paths
         m3u_file_path = Path(m3u_file).expanduser().resolve()
@@ -293,7 +277,7 @@ def main():
         run_analyze_m3u(credentials, args)
     elif choice == "4":
         csv_file = input("Enter the path to the main CSV file (required): ").strip()
-        shuffle = input("Shuffle the tracks within each cluster? (y/n): ").strip().lower() == 'y'
+        shuffle = input("Curate the tracks within each cluster? (y/n): ").strip().lower() == 'y'
         loved_input = input("Filter by loved tracks, albums, or artists (e.g., 'tracks albums') or leave blank: ").strip()
         loved = loved_input.split() if loved_input else None
         run_spawnre_csv(csv_file=csv_file, shuffle=shuffle, loved=loved)
