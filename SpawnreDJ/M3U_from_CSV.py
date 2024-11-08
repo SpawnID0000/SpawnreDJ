@@ -3,333 +3,267 @@
 import pandas as pd
 import random
 import logging
-import csv
+import numpy as np
+import csv  # Import for csv module
 from types import SimpleNamespace
-from typing import Any, Optional, Dict, List, Tuple
-
+from typing import Optional, List, Dict
 from pathlib import Path
-
-# Import the genre mapping dictionary from dic_spawnre.py
 from SpawnreDJ.dic_spawnre import genre_mapping
 
-# Define genre clusters and transition logic
-cluster_transition_logic = {
-    'rock': ['blues', 'folk', 'funk'],
-    'folk': ['folk-rock', 'country', 'rock'],
-    'pop': ['rock', 'R&B'],
-    'jazz': ['blues', 'R&B'],
-    'reggae': ['R&B', 'funk'],
-    'R&B': ['hip-hop', 'jazz'],
-    'country': ['folk', 'blues'],
-    'blues': ['rock', 'jazz'],
-    'hip-hop': ['R&B', 'electronic'],
-    'electronic': ['hip-hop', 'pop'],
-    'classical': ['jazz', 'acoustic rock']
-}
+# Define feature columns and initial tolerances
+feature_columns = [
+    'danceability', 'energy', 'loudness', 'speechiness', 
+    'acousticness', 'instrumentalness', 'liveness', 'valence', 'tempo'
+]
+initial_tolerances = {col: 0.1 if col not in ['loudness', 'tempo'] else 5.0 for col in feature_columns}
 
-# Initialize module-specific logger
 logger = logging.getLogger(__name__)
 
-
 def sanitize_path(path: str) -> Path:
-    """
-    Sanitize the input path by removing backslashes before spaces and normalizing the path.
-    
-    Args:
-        path (str): The original path string input by the user.
-        
-    Returns:
-        Path: The sanitized Path object.
-    """
-    # Replace escaped spaces (\ ) with regular spaces
-    sanitized = path.replace('\\ ', ' ')
-    
-    # Additionally, handle other common escape characters if necessary
-    # For example, replace double backslashes with single backslash
-    sanitized = sanitized.replace('\\\\', '\\')
-    
-    # Create a Path object and normalize it
-    sanitized_path = Path(sanitized).expanduser().resolve()
-    
-    return sanitized_path
+    sanitized = path.replace('\\ ', ' ').replace('\\\\', '\\')
+    return Path(sanitized).expanduser().resolve()
 
-
-def get_genres_from_hex(hex_code: str) -> list:
-    """
-    Extracts the genres from the provided hexadecimal code based on genre_mapping.
-    
-    Args:
-        hex_code (str): The hexadecimal code representing genres.
-    
-    Returns:
-        list: A list of genre names corresponding to the hex code.
-    """
-    genres = []
-    for i in range(0, len(hex_code), 2):
-        chunk = hex_code[i:i+2]
-        formatted_chunk = f'0x{chunk.upper()}'
-        for key, value in genre_mapping.items():
-            if value['Hex'] == formatted_chunk:
-                genres.append(value['Genre'])
-    return genres
-
+def load_csv(file_path: Path, delimiter=',', quoting=csv.QUOTE_MINIMAL) -> pd.DataFrame:
+    try:
+        df = pd.read_csv(file_path, delimiter=delimiter, quoting=quoting, on_bad_lines='skip')
+        df.columns = df.columns.str.strip().str.lower()
+        return df
+    except Exception as e:
+        logger.error(f"Error loading CSV file '{file_path}': {e}")
+        return pd.DataFrame()
 
 def create_clusters(df: pd.DataFrame, loved_csv: Optional[Path] = None, loved_categories: Optional[List[str]] = None) -> dict:
-    """
-    Creates clusters of tracks based on genre and optionally filters by loved status.
-
-    Args:
-        df (pd.DataFrame): The DataFrame containing track information.
-        loved_csv (Path, optional): Path to the _loved.csv file for filtering. Defaults to None.
-        loved_categories (List[str], optional): Categories for filtering (e.g., 'tracks', 'albums', 'artists').
-
-    Returns:
-        dict: A dictionary where keys are genres and values are lists of track file paths.
-    """
     clusters = {}
-
+    
     # Load the _loved.csv file if provided to filter by loved status
     loved_options = {}
-    if loved_csv and loved_csv.exists():
-        loved_df = pd.read_csv(loved_csv)
-        loved_options = {
-            'tracks': loved_df['loved_tracks'].str.lower() == 'yes',
-            'albums': loved_df['loved_albums'].str.lower() == 'yes',
-            'artists': loved_df['loved_artists'].str.lower() == 'yes'
-        }
-
+    if loved_csv and loved_csv.exists() and loved_categories:
+        loved_df = load_csv(loved_csv)
+        if not loved_df.empty:
+            loved_options = {
+                'tracks': loved_df['loved_tracks'].str.lower() == 'yes',
+                'albums': loved_df['loved_albums'].str.lower() == 'yes',
+                'artists': loved_df['loved_artists'].str.lower() == 'yes'
+            }
+        else:
+            logger.warning(f"Loved CSV file '{loved_csv}' is empty.")
+    
     logger.info(f"Processing {len(df)} rows from the CSV file.")
-
+    
     for index, row in df.iterrows():
         genre = row.get('spawnre_tag') or row.get('embedded_genre', 'Unknown')
+        genre = genre.strip().lower() if isinstance(genre, str) else 'unknown'
         
+        # Initialize the genre cluster if not present
         if genre not in clusters:
             clusters[genre] = []
-
-        # Check loved filtering based on categories
-        if loved_categories:
-            is_loved = any(
-                loved_options.get(category, pd.Series([False]*len(df))).iloc[index] 
-                for category in loved_categories
-            )
-            logger.debug(f"Track: {row['file_path']} - Genre: {genre} - Loved Status by {loved_categories}: {is_loved}")
-            if is_loved:
-                clusters[genre].append(row['file_path'])
-                logger.info(f"Added track '{row['file_path']}' to '{genre}' based on loved filter")
-            else:
-                logger.info(f"Skipped track '{row['file_path']}' for genre '{genre}' (did not meet loved criteria)")
-        else:
-            clusters[genre].append(row['file_path'])
-
-    logger.info(f"Created {len(clusters)} genre clusters.")
+        
+        # Determine if the track should be included based on loved categories
+        include_track = True
+        if loved_options and loved_categories:
+            is_loved = False
+            for category in loved_categories:
+                if category in loved_options and loved_options[category].iloc[index]:
+                    is_loved = True
+                    break
+            include_track = is_loved
+            if not include_track:
+                continue  # Skip adding this track as it does not meet loved criteria
+        
+        clusters[genre].append(row['file_path'])
+    
     return clusters
 
+def clean_features_df(features_df: pd.DataFrame) -> pd.DataFrame:
+    """ Ensure that `features_df` contains only rows with all necessary feature columns. """
+    missing_columns = [col for col in feature_columns if col not in features_df.columns]
+    if missing_columns:
+        logger.error(f"Missing required feature columns in features CSV: {missing_columns}")
+        return pd.DataFrame()
+    
+    # Drop rows with NaNs in required feature columns
+    features_df.dropna(subset=feature_columns, inplace=True)
+    
+    # Convert feature columns to numeric types
+    for col in feature_columns:
+        features_df[col] = pd.to_numeric(features_df[col], errors='coerce')
+    
+    # After conversion, drop any rows that have NaN in feature columns due to conversion errors
+    features_df.dropna(subset=feature_columns, inplace=True)
+    
+    # Create a unique identifier for each track
+    features_df['unique_track'] = features_df['track'].str.strip().str.lower() + "_" + features_df['artist'].str.strip().str.lower()
+    
+    # Drop duplicates based on unique_track to ensure uniqueness
+    features_df.drop_duplicates(subset=['unique_track'], inplace=True)
+    
+    # Set 'unique_track' as the index for easy lookup
+    features_df.set_index('unique_track', inplace=True)
+    
+    # Select only feature_columns to ensure no extra columns are present
+    features_df = features_df[feature_columns]
+    
+    logger.info(f"Cleaned features DataFrame: {features_df.shape[0]} records remaining after cleaning.")
+    
+    # Log data types to ensure correct conversion
+    logger.debug(f"Data types after cleaning:\n{features_df.dtypes}")
+    
+    return features_df
 
-def order_clusters(clusters: dict, shuffle: bool = False) -> list:
-    """
-    Orders clusters based on the genre and transition logic. Optionally shuffles tracks within clusters.
+def curate_cluster(cluster: List[str], main_df: pd.DataFrame, features_df: pd.DataFrame) -> List[str]:
+    if len(cluster) <= 1:
+        return cluster.copy()
     
-    Args:
-        clusters (dict): The dictionary containing genre clusters.
-        shuffle (bool, optional): Whether to shuffle tracks within each cluster. Defaults to False.
+    curated_order = [cluster.pop(0)]
+    tolerance = initial_tolerances.copy()
     
-    Returns:
-        list: A list of tuples containing genre and ordered list of tracks.
-    """
+    while cluster:
+        current_file_path = curated_order[-1]
+        # Normalize the file path for comparison
+        normalized_current_path = Path(current_file_path).as_posix().lower()
+        current_row = main_df[main_df['file_path'].str.lower() == normalized_current_path]
+    
+        if current_row.empty:
+            logger.error(f"Current file path '{current_file_path}' not found in main CSV.")
+            break  # Alternatively, continue to the next track
+    
+        current_track = current_row['track'].values[0]
+        current_artist = current_row['artist'].values[0]
+        unique_current_track = f"{current_track.strip().lower()}_{current_artist.strip().lower()}"
+    
+        if unique_current_track not in features_df.index:
+            logger.warning(f"Missing features for current track '{unique_current_track}'. Skipping to next track.")
+            # Instead of breaking, try to find the next track in the cluster
+            if cluster:
+                curated_order.append(cluster.pop(0))
+            else:
+                break
+            continue
+    
+        current_features = features_df.loc[unique_current_track].to_numpy()
+        
+        # Debugging: Log the type and content of current_features
+        logger.debug(f"Current Features ({unique_current_track}): {current_features}")
+        logger.debug(f"Type of current_features: {type(current_features)}")
+    
+        next_track, min_distance = None, float('inf')
+    
+        for candidate_path in cluster:
+            normalized_candidate_path = Path(candidate_path).as_posix().lower()
+            candidate_row = main_df[main_df['file_path'].str.lower() == normalized_candidate_path]
+            if candidate_row.empty:
+                logger.error(f"Candidate file path '{candidate_path}' not found in main CSV.")
+                continue
+    
+            candidate_track = candidate_row['track'].values[0]
+            candidate_artist = candidate_row['artist'].values[0]
+            unique_candidate_track = f"{candidate_track.strip().lower()}_{candidate_artist.strip().lower()}"
+    
+            if unique_candidate_track not in features_df.index:
+                logger.warning(f"Incomplete features for candidate track '{unique_candidate_track}'. Skipping.")
+                continue
+    
+            candidate_features = features_df.loc[unique_candidate_track].to_numpy()
+            
+            # Debugging: Log the type and content of candidate_features
+            logger.debug(f"Candidate Features ({unique_candidate_track}): {candidate_features}")
+            logger.debug(f"Type of candidate_features: {type(candidate_features)}")
+    
+            # Ensure that both feature arrays are numeric
+            if not (isinstance(candidate_features, np.ndarray) and isinstance(current_features, np.ndarray)):
+                logger.error(f"Feature data types are not compatible for '{unique_candidate_track}'. Skipping.")
+                continue
+    
+            distance = np.linalg.norm(candidate_features - current_features)
+            logger.debug(f"Distance between '{unique_current_track}' and '{unique_candidate_track}': {distance}")
+            if distance < min_distance:
+                next_track, min_distance = candidate_path, distance
+    
+        if next_track:
+            curated_order.append(next_track)
+            cluster.remove(next_track)
+        else:
+            # If no similar next track found, append the next available track randomly
+            logger.info("No similar next track found based on audio features. Appending the next track randomly.")
+            curated_order.append(cluster.pop(0))
+    
+    return curated_order
+
+def order_clusters(clusters: dict, main_df: pd.DataFrame, features_df: Optional[pd.DataFrame], curate: bool = False) -> list:
     ordered_clusters = []
-    used_genres = set()
-
     for genre, tracks in clusters.items():
-        if genre not in used_genres:
-            if shuffle:
-                random.shuffle(tracks)
-            ordered_clusters.append((genre, tracks))
-            used_genres.add(genre)
-
+        if tracks:
+            if curate and features_df is not None:
+                curated_paths = curate_cluster(tracks.copy(), main_df, features_df)
+            else:
+                curated_paths = tracks.copy()
+                random.shuffle(curated_paths)
+            ordered_clusters.append((genre, curated_paths))
     return ordered_clusters
 
-
-def write_m3u(ordered_clusters: list, output_file: Path, root_directory: Path, path_prefix: str = '../') -> list:
-    """
-    Writes the ordered genre clusters into an M3U playlist file with relative paths.
-    Omits clusters with zero tracks.
-
-    Args:
-        ordered_clusters (list): List of tuples containing genre and tracks.
-        output_file (Path): Path to the output M3U file.
-        root_directory (Path): The root directory to calculate relative paths.
-        path_prefix (str, optional): Prefix to add to each path in the playlist. Defaults to '../'.
-    
-    Returns:
-        list: The ordered_clusters list for further use if needed.
-    """
+def write_m3u(ordered_clusters: list, output_file: Path, root_directory: Path, path_prefix: str = '../') -> None:
     with output_file.open('w', encoding='utf-8') as f:
         f.write("#EXTM3U\n")
         for genre, tracks in ordered_clusters:
-            if len(tracks) > 0:  # Only write clusters with tracks
+            if tracks:
                 f.write(f"# Genre: {genre}\n")
-                for absolute_path in tracks:
-                    absolute_path_obj = Path(absolute_path)
-                    if not absolute_path_obj.is_absolute():
-                        absolute_path_obj = (root_directory / absolute_path).resolve()
+                for path in tracks:
+                    absolute_path = (root_directory / path).resolve()
                     try:
-                        relative_path = absolute_path_obj.relative_to(root_directory)
+                        relative_path = absolute_path.relative_to(root_directory)
+                        f.write(f"{path_prefix}{relative_path.as_posix()}\n")
                     except ValueError:
                         # If absolute_path is not under root_directory, use absolute path
-                        relative_path = absolute_path_obj
-                    # Prepend the path prefix to the relative path
-                    f.write(f"{path_prefix}{relative_path.as_posix()}\n")
-    return ordered_clusters
-
+                        f.write(f"{absolute_path.as_posix()}\n")
+    logger.info(f"Curated M3U playlist written to '{output_file}'.")
 
 def print_summary(ordered_clusters: list) -> None:
-    """
-    Prints a summary of the clusters and the number of tracks in each.
-    Omits clusters with zero tracks.
-
-    Args:
-        ordered_clusters (list): List of tuples containing genre and tracks.
-    """
     print("\nClusters summary (in M3U order):")
     for genre, tracks in ordered_clusters:
-        if len(tracks) > 0:  # Only print clusters with tracks
-            print(f"- {genre}: {len(tracks)} tracks")
-
-
-def parse_m3u_for_loved(m3u_file: Path, music_directory: Path) -> set:
-    """
-    Parses a loved M3U file and returns a set of absolute, normalized file paths.
-    
-    Args:
-        m3u_file (Path): Path to the loved M3U file.
-        music_directory (Path): Root directory of the music files to resolve relative paths.
-    
-    Returns:
-        set: A set of normalized file paths that are marked as loved.
-    """
-    loved_paths = set()
-    if m3u_file.exists():
-        with m3u_file.open('r', encoding='utf-8') as file:
-            for line in file:
-                line = line.strip()
-                if line and not line.startswith("#"):
-                    # Resolve relative paths to absolute paths
-                    track_path = (music_directory / line).resolve() if not Path(line).is_absolute() else Path(line).resolve()
-                    # Normalize and lowercase the path for consistent comparison
-                    normalized_path = track_path.as_posix().lower()
-                    loved_paths.add(normalized_path)
-    else:
-        logger.warning(f"Loved M3U file '{m3u_file}' does not exist.")
-    return loved_paths
-
-
-def process_m3u_with_loved(args: Any, loved_tracks: set, loved_albums: set, loved_artists: set) -> None:
-    """
-    Processes the main playlist CSV and appends loved metadata.
-    
-    Args:
-        args (Any): A SimpleNamespace object containing arguments, primarily the m3u_file path.
-        loved_tracks (set): Set of loved track file paths.
-        loved_albums (set): Set of loved album directory paths.
-        loved_artists (set): Set of loved artist directory paths.
-    """
-    # Define paths based on the m3u_file
-    csv_file_path = Path(args.m3u_file).with_suffix('.csv')
-    output_csv_path = Path(args.m3u_file).with_stem(csv_file_path.stem + '_loved').with_suffix('.csv')
-
-    try:
-        with csv_file_path.open('r', newline='', encoding='utf-8') as csvfile:
-            reader = csv.DictReader(csvfile)
-            fieldnames = reader.fieldnames + ['loved_tracks', 'loved_albums', 'loved_artists']
-            data = list(reader)  # Store all the data in a list for processing
-
-        with output_csv_path.open('w', newline='', encoding='utf-8') as csvfile:
-            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-            writer.writeheader()
-
-            for track_data in data:
-                # Normalize the file path for comparison
-                file_path = Path(track_data.get('file_path', '')).as_posix().lower()
-                normalized_file_path = Path(file_path)
-
-                # Derive album and artist directories
-                album_dir = normalized_file_path.parent
-                album_dir_normalized = album_dir.as_posix().lower()
-
-                artist_dir = album_dir.parent
-                artist_dir_normalized = artist_dir.as_posix().lower()
-
-                # Check if the track, album, or artist is "loved"
-                is_loved_track = 'yes' if file_path in loved_tracks else 'no'
-                is_loved_album = 'yes' if album_dir_normalized in loved_albums else 'no'
-                is_loved_artist = 'yes' if artist_dir_normalized in loved_artists else 'no'
-
-                # Add the loved metadata
-                track_data['loved_tracks'] = is_loved_track
-                track_data['loved_albums'] = is_loved_album
-                track_data['loved_artists'] = is_loved_artist
-
-                # Write the updated row to the new CSV file
-                writer.writerow(track_data)
-
-        logger.info(f"Loved metadata CSV file created successfully: {output_csv_path}")
-
-    except Exception as e:
-        logger.error(f"Error processing loved metadata: {e}")
-
+        print(f"- {genre}: {len(tracks)} tracks")
 
 def generate_curated_m3u(args: SimpleNamespace) -> None:
-    """
-    Generates a curated M3U playlist from the provided CSV file, optionally filtering by loved metadata.
-
-    Args:
-        args (SimpleNamespace): Object containing parameters for processing the CSV file and filtering options.
-    """
-    # Ensure csv_file is treated as a Path object
     csv_file = Path(args.csv_file)
-
-    # Load the CSV file into a DataFrame
-    try:
-        df = pd.read_csv(csv_file, delimiter=',', on_bad_lines='skip', quoting=1)  # Handle commas
-    except Exception as e:
-        logger.error(f"Error reading CSV file '{csv_file}': {e}")
+    df = load_csv(csv_file)
+    
+    if 'file_path' not in df.columns:
+        logger.error(f"'file_path' column is missing in the main CSV file '{csv_file}'. Please check the CSV structure.")
         return
-
-    # Clean up column names
-    df.columns = df.columns.str.strip()
-
-    # Create clusters based on spawnre genres and loved options (_loved.csv)
+    
+    features_file = csv_file.with_name(csv_file.stem + '_features.csv')
+    features_df = None
+    if features_file.exists():
+        features_df = load_csv(features_file)
+        if 'track' not in features_df.columns or 'artist' not in features_df.columns:
+            logger.error(f"'track' and 'artist' columns are missing in the features CSV file '{features_file}'. Please check the CSV structure.")
+            return
+        features_df = clean_features_df(features_df)
+        if features_df.empty:
+            logger.error("Features DataFrame is empty after cleaning. Check the features CSV.")
+            return
+        logger.info("Successfully loaded and cleaned features CSV for curation support.")
+    else:
+        logger.warning(f"Features file '{features_file}' not found. Proceeding without features.")
+    
     clusters = create_clusters(df, loved_csv=args.loved_csv, loved_categories=args.loved)
-
-    # Order clusters based on transition logic
-    ordered_clusters = order_clusters(clusters, shuffle=args.shuffle)
-
-    # Write output M3U playlist
+    ordered_clusters = order_clusters(clusters, df, features_df, curate=args.shuffle)
+    
     output_file = csv_file.with_name(csv_file.stem + '_curated.m3u')
-    ordered_clusters = write_m3u(ordered_clusters, output_file, root_directory=csv_file.parent)
-
+    write_m3u(ordered_clusters, output_file, csv_file.parent)
+    
     print(f"Curated M3U playlist created: {output_file}")
-
-    # Print cluster summary in the same order as the M3U file
     print_summary(ordered_clusters)
-
 
 if __name__ == "__main__":
     import argparse
-
     parser = argparse.ArgumentParser(description="Generate a curated M3U playlist from a CSV file.")
     parser.add_argument("csv_file", type=str, help="Path to the input CSV file")
     parser.add_argument("-loved_csv", type=str, help="Path to the _loved.csv file (optional)", default=None)
-    parser.add_argument("-shuffle", action="store_true", help="Shuffle the tracks within each cluster")
-
+    parser.add_argument("-shuffle", action="store_true", help="Curate the tracks within each cluster based on audio features")
     args = parser.parse_args()
-
-    # Sanitize input paths
-    sanitized_csv_file = sanitize_path(args.csv_file)
-    sanitized_loved_csv = sanitize_path(args.loved_csv) if args.loved_csv else None
-
+    
     generate_curated_m3u(SimpleNamespace(
-        csv_file=sanitized_csv_file,
-        loved_csv=sanitized_loved_csv,
+        csv_file=sanitize_path(args.csv_file),
+        loved_csv=sanitize_path(args.loved_csv) if args.loved_csv else None,
         shuffle=args.shuffle
     ))
