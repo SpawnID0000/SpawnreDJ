@@ -4,11 +4,15 @@ import pandas as pd
 import random
 import logging
 import numpy as np
-import csv  # Import for csv module
+import csv
+import json
 from types import SimpleNamespace
 from typing import Optional, List, Dict
 from pathlib import Path
-from SpawnreDJ.dic_spawnre import genre_mapping
+from SpawnreDJ.dic_spawnre import genre_mapping, subgenre_to_parent  # Updated import
+
+# Initialize logger without configuring it
+logger = logging.getLogger(__name__)
 
 # Define feature columns and initial tolerances
 feature_columns = [
@@ -17,7 +21,12 @@ feature_columns = [
 ]
 initial_tolerances = {col: 0.1 if col not in ['loudness', 'tempo'] else 5.0 for col in feature_columns}
 
-logger = logging.getLogger(__name__)
+# Create a reverse mapping: genre_name -> genre_code
+genre_name_to_code = {
+    details['Genre'].lower(): key
+    for key, details in genre_mapping.items()
+    if details['Genre']
+}
 
 def sanitize_path(path: str) -> Path:
     sanitized = path.replace('\\ ', ' ').replace('\\\\', '\\')
@@ -32,7 +41,23 @@ def load_csv(file_path: Path, delimiter=',', quoting=csv.QUOTE_MINIMAL) -> pd.Da
         logger.error(f"Error loading CSV file '{file_path}': {e}")
         return pd.DataFrame()
 
-def create_clusters(df: pd.DataFrame, loved_csv: Optional[Path] = None, loved_categories: Optional[List[str]] = None) -> dict:
+def get_related_genres(current_genre: str, genre_mapping: Dict[str, Dict], genre_name_to_code: Dict[str, str]) -> List[str]:
+    """
+    Given the current genre, return a list of related genres based on the 'Related' field.
+    """
+    # Find the code(s) for the current genre
+    current_genre_lower = current_genre.lower()
+    current_keys = [key for key, details in genre_mapping.items() if details['Genre'].lower() == current_genre_lower]
+    related_genres = []
+    for key in current_keys:
+        related_keys = genre_mapping[key].get('Related', [])
+        for related_key in related_keys:
+            related_genre = genre_mapping.get(related_key, {}).get('Genre', '').lower()
+            if related_genre:
+                related_genres.append(related_genre)
+    return related_genres
+
+def create_clusters(df: pd.DataFrame, loved_csv: Optional[Path] = None, loved_categories: Optional[List[str]] = None) -> Dict[str, List[str]]:
     clusters = {}
     
     # Load the _loved.csv file if provided to filter by loved status
@@ -91,8 +116,20 @@ def clean_features_df(features_df: pd.DataFrame) -> pd.DataFrame:
     # After conversion, drop any rows that have NaN in feature columns due to conversion errors
     features_df.dropna(subset=feature_columns, inplace=True)
     
-    # Create a unique identifier for each track
-    features_df['unique_track'] = features_df['track'].str.strip().str.lower() + "_" + features_df['artist'].str.strip().str.lower()
+    # Create a unique identifier for each track with standardized formatting
+    features_df['unique_track'] = (
+        features_df['track']
+        .str.strip()
+        .str.lower()
+        .str.replace(' ', '-', regex=False)
+        .str.replace('_', '-', regex=False)
+        + "_"
+        + features_df['artist']
+        .str.strip()
+        .str.lower()
+        .str.replace(' ', '-', regex=False)
+        .str.replace('_', '-', regex=False)
+    )
     
     # Drop duplicates based on unique_track to ensure uniqueness
     features_df.drop_duplicates(subset=['unique_track'], inplace=True)
@@ -129,7 +166,7 @@ def curate_cluster(cluster: List[str], main_df: pd.DataFrame, features_df: pd.Da
     
         current_track = current_row['track'].values[0]
         current_artist = current_row['artist'].values[0]
-        unique_current_track = f"{current_track.strip().lower()}_{current_artist.strip().lower()}"
+        unique_current_track = f"{current_track.strip().lower().replace(' ', '-').replace('_', '-')}_{current_artist.strip().lower().replace(' ', '-').replace('_', '-')}"
     
         if unique_current_track not in features_df.index:
             logger.warning(f"Missing features for current track '{unique_current_track}'. Skipping to next track.")
@@ -157,7 +194,7 @@ def curate_cluster(cluster: List[str], main_df: pd.DataFrame, features_df: pd.Da
     
             candidate_track = candidate_row['track'].values[0]
             candidate_artist = candidate_row['artist'].values[0]
-            unique_candidate_track = f"{candidate_track.strip().lower()}_{candidate_artist.strip().lower()}"
+            unique_candidate_track = f"{candidate_track.strip().lower().replace(' ', '-').replace('_', '-')}_{candidate_artist.strip().lower().replace(' ', '-').replace('_', '-')}"
     
             if unique_candidate_track not in features_df.index:
                 logger.warning(f"Incomplete features for candidate track '{unique_candidate_track}'. Skipping.")
@@ -189,19 +226,105 @@ def curate_cluster(cluster: List[str], main_df: pd.DataFrame, features_df: pd.Da
     
     return curated_order
 
-def order_clusters(clusters: dict, main_df: pd.DataFrame, features_df: Optional[pd.DataFrame], curate: bool = False) -> list:
-    ordered_clusters = []
-    for genre, tracks in clusters.items():
-        if tracks:
-            if curate and features_df is not None:
-                curated_paths = curate_cluster(tracks.copy(), main_df, features_df)
+def order_clusters_by_relationships(
+    clusters: Dict[str, List[str]],
+    genre_mapping: Dict[str, Dict],
+    subgenre_to_parent: Dict[str, str]
+) -> List[str]:
+    """
+    Order genre clusters starting with the largest cluster and
+    sequencing based on related genres.
+    
+    Returns a list of genres in the desired order.
+    """
+    # Calculate the number of tracks in each genre cluster
+    cluster_counts = {genre: len(tracks) for genre, tracks in clusters.items()}
+    
+    # Sort genres by descending number of tracks
+    sorted_genres = sorted(cluster_counts.items(), key=lambda x: x[1], reverse=True)
+    
+    # Initialize ordered list with the largest cluster
+    if not sorted_genres:
+        return []
+    
+    ordered_genres = [sorted_genres[0][0]]
+    used_genres = set(ordered_genres)
+    
+    # Function to find the next genre based on related genres
+    def find_next_genre(current_genre, clusters, used_genres):
+        related = get_related_genres(current_genre, genre_mapping, genre_name_to_code)
+        for rel_genre in related:
+            if rel_genre in clusters and rel_genre not in used_genres:
+                return rel_genre
+        return None
+    
+    current_genre = ordered_genres[0]
+    
+    while len(used_genres) < len(clusters):
+        next_genre = find_next_genre(current_genre, clusters, used_genres)
+        if next_genre:
+            ordered_genres.append(next_genre)
+            used_genres.add(next_genre)
+            current_genre = next_genre
+        else:
+            # If no related genre is found, pick the next largest unused genre
+            remaining = sorted_genres.copy()
+            for genre, count in remaining:
+                if genre not in used_genres:
+                    ordered_genres.append(genre)
+                    used_genres.add(genre)
+                    current_genre = genre
+                    break
             else:
-                curated_paths = tracks.copy()
-                random.shuffle(curated_paths)
-            ordered_clusters.append((genre, curated_paths))
-    return ordered_clusters
+                break  # No remaining genres
+    return ordered_genres
 
-def write_m3u(ordered_clusters: list, output_file: Path, root_directory: Path, path_prefix: str = '../') -> None:
+def save_genre_order(config_path='genre_order.json', preferred_genre_order: Optional[List[str]] = None):
+    """
+    Save the preferred genre order to a JSON configuration file.
+    """
+    if preferred_genre_order:
+        try:
+            # Store genre names in their original (title case) format for readability
+            config = {'preferred_genre_order': [genre.replace('-', ' ').title() for genre in preferred_genre_order]}
+            with open(config_path, 'w') as f:
+                json.dump(config, f, indent=4)
+            logger.info(f"Preferred genre order saved to '{config_path}'.")
+            print(f"Preferred genre order saved to '{config_path}'.")
+        except Exception as e:
+            logger.error(f"Failed to save genre order to '{config_path}': {e}")
+            print(f"Error: Failed to save genre order to '{config_path}'. Check logs for details.")
+
+def load_saved_genre_order(config_path='genre_order.json') -> Optional[List[str]]:
+    """
+    Load the preferred genre order from a JSON configuration file.
+    Returns a list of genres or None if not found or invalid.
+    """
+    config_file = Path(config_path)
+    if config_file.is_file():
+        try:
+            with open(config_path, 'r') as f:
+                config = json.load(f)
+            preferred_order = config.get('preferred_genre_order', None)
+            if preferred_order and isinstance(preferred_order, list):
+                # Standardize genre names: lowercase and strip whitespace
+                preferred_order = [genre.lower().strip() for genre in preferred_order]
+                logger.info(f"Loaded saved genre order from '{config_path}'.")
+                return preferred_order
+            else:
+                logger.warning(f"'preferred_genre_order' not found or invalid in '{config_path}'.")
+                return None
+        except Exception as e:
+            logger.error(f"Error reading genre order from '{config_path}': {e}")
+            return None
+    else:
+        logger.info(f"No saved genre order found at '{config_path}'.")
+        return None
+
+def write_m3u(ordered_clusters: List[tuple], output_file: Path, root_directory: Path, path_prefix: str = '../') -> None:
+    """
+    Write the ordered clusters to an M3U playlist file.
+    """
     with output_file.open('w', encoding='utf-8') as f:
         f.write("#EXTM3U\n")
         for genre, tracks in ordered_clusters:
@@ -216,11 +339,19 @@ def write_m3u(ordered_clusters: list, output_file: Path, root_directory: Path, p
                         # If absolute_path is not under root_directory, use absolute path
                         f.write(f"{absolute_path.as_posix()}\n")
     logger.info(f"Curated M3U playlist written to '{output_file}'.")
+    print(f"Curated M3U playlist written to '{output_file}'.")
 
-def print_summary(ordered_clusters: list) -> None:
+def print_summary(ordered_clusters: List[tuple]) -> None:
     print("\nClusters summary (in M3U order):")
     for genre, tracks in ordered_clusters:
         print(f"- {genre}: {len(tracks)} tracks")
+
+def format_genre_name(genre: str) -> str:
+    """
+    Format genre names to title case, handling special characters appropriately.
+    Example: "rock & roll" -> "Rock & Roll"
+    """
+    return ' '.join(word.capitalize() for word in genre.split(' '))
 
 def generate_curated_m3u(args: SimpleNamespace) -> None:
     csv_file = Path(args.csv_file)
@@ -246,24 +377,232 @@ def generate_curated_m3u(args: SimpleNamespace) -> None:
         logger.warning(f"Features file '{features_file}' not found. Proceeding without features.")
     
     clusters = create_clusters(df, loved_csv=args.loved_csv, loved_categories=args.loved)
-    ordered_clusters = order_clusters(clusters, df, features_df, curate=args.shuffle)
     
-    output_file = csv_file.with_name(csv_file.stem + '_curated.m3u')
-    write_m3u(ordered_clusters, output_file, csv_file.parent)
+    if not clusters:
+        logger.error("No clusters found. Exiting playlist generation.")
+        return
     
-    print(f"Curated M3U playlist created: {output_file}")
-    print_summary(ordered_clusters)
-
-if __name__ == "__main__":
-    import argparse
-    parser = argparse.ArgumentParser(description="Generate a curated M3U playlist from a CSV file.")
-    parser.add_argument("csv_file", type=str, help="Path to the input CSV file")
-    parser.add_argument("-loved_csv", type=str, help="Path to the _loved.csv file (optional)", default=None)
-    parser.add_argument("-shuffle", action="store_true", help="Curate the tracks within each cluster based on audio features")
-    args = parser.parse_args()
+    # Order clusters by relationships
+    ordered_genres = order_clusters_by_relationships(clusters, genre_mapping, subgenre_to_parent)
     
-    generate_curated_m3u(SimpleNamespace(
-        csv_file=sanitize_path(args.csv_file),
-        loved_csv=sanitize_path(args.loved_csv) if args.loved_csv else None,
-        shuffle=args.shuffle
-    ))
+    if not ordered_genres:
+        logger.error("Failed to order genres. Exiting playlist generation.")
+        return
+    
+    # Create ordered_clusters list based on ordered_genres
+    ordered_clusters = []
+    for genre in ordered_genres:
+        tracks = clusters.get(genre, [])
+        if not tracks:
+            continue  # Skip empty clusters
+        
+        if args.shuffle and features_df is not None:
+            curated_paths = curate_cluster(tracks.copy(), df, features_df)
+        else:
+            curated_paths = tracks.copy()
+            random.shuffle(curated_paths)
+        
+        ordered_clusters.append((genre, curated_paths))
+    
+    # Present summary to the user
+    print("\nClusters summary (in current M3U order):")
+    for genre, tracks in ordered_clusters:
+        print(f"- {genre}: {len(tracks)} tracks")
+    
+    # Generate and print the comma-separated Clusters list
+    clusters_list = ", ".join([format_genre_name(genre) for genre, _ in ordered_clusters])
+    print(f"\nClusters list: {clusters_list}")
+    
+    # Prompt user for confirmation or modification
+    user_choice = input("\nWould you like to modify the genre order? (y/n): ").strip().lower()
+    if user_choice == 'y':
+        # Allow user to input a new genre order or recall saved order
+        print("\nEnter your preferred genre order, separated by commas.")
+        print("Ensure that all genres are listed and spelled correctly.")
+        print("Leave blank to recall a previously saved genre order.")
+        print("Or enter the path to a different genre order JSON file.")
+        print("Example: classic rock, alternative rock, pop rock, indie pop")
+        new_order_input = input("Preferred Genre Order: ").strip().lower()
+        
+        if not new_order_input:
+            # User chose to recall the saved genre order
+            saved_order = load_saved_genre_order()
+            if saved_order:
+                # Validate that saved genres exist in current clusters
+                valid_saved_order = [genre for genre in saved_order if genre in clusters]
+                if not valid_saved_order:
+                    print("Saved genre order does not match current playlist genres. Proceeding with the existing order.")
+                else:
+                    # Reorder based on saved order
+                    ordered_genres_user = valid_saved_order.copy()
+                    remaining_genres = [genre for genre in ordered_genres if genre not in ordered_genres_user]
+                    ordered_genres_user.extend(remaining_genres)
+                    
+                    # Recreate ordered_clusters based on saved order
+                    ordered_clusters = []
+                    for genre in ordered_genres_user:
+                        tracks = clusters.get(genre, [])
+                        if not tracks:
+                            continue  # Skip empty clusters
+                        
+                        if args.shuffle and features_df is not None:
+                            curated_paths = curate_cluster(tracks.copy(), df, features_df)
+                        else:
+                            curated_paths = tracks.copy()
+                            random.shuffle(curated_paths)
+                        
+                        ordered_clusters.append((genre, curated_paths))
+                    
+                    # Present updated summary
+                    print("\nUpdated Clusters summary (using saved genre order):")
+                    for genre, tracks in ordered_clusters:
+                        print(f"- {genre}: {len(tracks)} tracks")
+                    
+                    # Generate and print the updated comma-separated Clusters list
+                    updated_clusters_list = ", ".join([format_genre_name(genre) for genre, _ in ordered_clusters])
+                    print(f"\nClusters list: {updated_clusters_list}")
+                    
+                    # Proceed to write the M3U file
+                    output_file = csv_file.with_name(csv_file.stem + '_curated.m3u')
+                    write_m3u(ordered_clusters, output_file, csv_file.parent)
+                    
+                    print(f"\nCurated M3U playlist created: {output_file}")
+                    print_summary(ordered_clusters)
+                    return  # Exit after using saved order
+            else:
+                print("No saved genre order found. Please enter a new genre order.")
+        
+        # Check if the user entered a path to a JSON file
+        elif new_order_input.endswith('.json'):
+            json_path = Path(new_order_input)
+            if json_path.is_file():
+                try:
+                    with open(json_path, 'r') as f:
+                        config = json.load(f)
+                    new_preferred_order = config.get('preferred_genre_order', None)
+                    if new_preferred_order and isinstance(new_preferred_order, list):
+                        # Standardize genre names
+                        new_preferred_order = [genre.lower().strip() for genre in new_preferred_order]
+                        
+                        # Validate that entered genres exist in clusters
+                        valid_genres = [genre for genre in new_preferred_order if genre in clusters]
+                        invalid_genres = [genre for genre in new_preferred_order if genre not in clusters]
+                        
+                        if invalid_genres:
+                            print(f"Warning: The following genres are not present in your playlist and will be ignored: {', '.join(invalid_genres)}")
+                        
+                        if valid_genres:
+                            # Reorder based on JSON file
+                            ordered_genres_user = valid_genres.copy()
+                            remaining_genres = [genre for genre in ordered_genres if genre not in ordered_genres_user]
+                            ordered_genres_user.extend(remaining_genres)
+                            
+                            # Recreate ordered_clusters based on JSON order
+                            ordered_clusters = []
+                            for genre in ordered_genres_user:
+                                tracks = clusters.get(genre, [])
+                                if not tracks:
+                                    continue  # Skip empty clusters
+                                
+                                if args.shuffle and features_df is not None:
+                                    curated_paths = curate_cluster(tracks.copy(), df, features_df)
+                                else:
+                                    curated_paths = tracks.copy()
+                                    random.shuffle(curated_paths)
+                                
+                                ordered_clusters.append((genre, curated_paths))
+                            
+                            # Present updated summary
+                            print("\nUpdated Clusters summary (using specified JSON genre order):")
+                            for genre, tracks in ordered_clusters:
+                                print(f"- {genre}: {len(tracks)} tracks")
+                            
+                            # Generate and print the updated comma-separated Clusters list
+                            updated_clusters_list = ", ".join([format_genre_name(genre) for genre, _ in ordered_clusters])
+                            print(f"\nClusters list: {updated_clusters_list}")
+                            
+                            # Offer to save the new order
+                            save_choice = input("\nWould you like to save this new genre order for future use? (y/n): ").strip().lower()
+                            if save_choice == 'y':
+                                save_genre_order(preferred_genre_order=new_preferred_order)
+                            
+                            # Proceed to write the M3U file
+                            output_file = csv_file.with_name(csv_file.stem + '_curated.m3u')
+                            write_m3u(ordered_clusters, output_file, csv_file.parent)
+                            
+                            print(f"\nCurated M3U playlist created: {output_file}")
+                            print_summary(ordered_clusters)
+                            return  # Exit after using specified JSON order
+                        else:
+                            print("No valid genres found in the specified JSON file. Proceeding with the existing order.")
+                    else:
+                        print("Invalid genre order format in the specified JSON file. Please ensure it contains a 'preferred_genre_order' list.")
+                except Exception as e:
+                    logger.error(f"Error loading genre order from '{json_path}': {e}")
+                    print(f"Error: Could not load genre order from '{json_path}'. Please check the file and try again.")
+            else:
+                print(f"The specified JSON file '{json_path}' does not exist. Please enter a valid path.")
+        
+        # User entered a new genre order manually
+        else:
+            # Process the manually entered genre order
+            new_preferred_order = [genre.strip().lower() for genre in new_order_input.split(",") if genre.strip()]
+            
+            if new_preferred_order:
+                # Validate that entered genres exist in clusters
+                valid_genres = [genre for genre in new_preferred_order if genre in clusters]
+                invalid_genres = [genre for genre in new_preferred_order if genre not in clusters]
+                
+                if invalid_genres:
+                    print(f"Warning: The following genres are not present in your playlist and will be ignored: {', '.join(invalid_genres)}")
+                
+                if valid_genres:
+                    # Reorder based on user input
+                    ordered_genres_user = valid_genres.copy()
+                    remaining_genres = [genre for genre in ordered_genres if genre not in ordered_genres_user]
+                    ordered_genres_user.extend(remaining_genres)
+                    
+                    # Recreate ordered_clusters based on user-defined order
+                    ordered_clusters = []
+                    for genre in ordered_genres_user:
+                        tracks = clusters.get(genre, [])
+                        if not tracks:
+                            continue  # Skip empty clusters
+                        
+                        if args.shuffle and features_df is not None:
+                            curated_paths = curate_cluster(tracks.copy(), df, features_df)
+                        else:
+                            curated_paths = tracks.copy()
+                            random.shuffle(curated_paths)
+                        
+                        ordered_clusters.append((genre, curated_paths))
+                    
+                    # Present updated summary
+                    print("\nUpdated Clusters summary (in new M3U order):")
+                    for genre, tracks in ordered_clusters:
+                        print(f"- {genre}: {len(tracks)} tracks")
+                    
+                    # Generate and print the updated comma-separated Clusters list
+                    updated_clusters_list = ", ".join([format_genre_name(genre) for genre, _ in ordered_clusters])
+                    print(f"\nClusters list: {updated_clusters_list}")
+                    
+                    # Offer to save the new order
+                    save_choice = input("\nWould you like to save this new genre order for future use? (y/n): ").strip().lower()
+                    if save_choice == 'y':
+                        save_genre_order(preferred_genre_order=new_preferred_order)
+            else:
+                print("No genre order entered. Proceeding with the existing order.")
+    
+    if __name__ == "__main__":
+        import argparse
+        parser = argparse.ArgumentParser(description="Generate a curated M3U playlist from a CSV file.")
+        parser.add_argument("csv_file", type=str, help="Path to the input CSV file")
+        parser.add_argument("-loved_csv", type=str, help="Path to the _loved.csv file (optional)", default=None)
+        parser.add_argument("-shuffle", action="store_true", help="Curate the tracks within each cluster based on audio features")
+        args = parser.parse_args()
+        
+        generate_curated_m3u(SimpleNamespace(
+            csv_file=sanitize_path(args.csv_file),
+            loved_csv=sanitize_path(args.loved_csv) if args.loved_csv else None,
+            shuffle=args.shuffle
+        ))
