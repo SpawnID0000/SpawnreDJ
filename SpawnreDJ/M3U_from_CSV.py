@@ -391,28 +391,13 @@ def generate_curated_m3u(args: SimpleNamespace) -> None:
         logger.error("Failed to order genres. Exiting playlist generation.")
         return
     
-    # Create ordered_clusters list based on ordered_genres
-    ordered_clusters = []
-    for genre in ordered_genres:
-        tracks = clusters.get(genre, [])
-        if not tracks:
-            continue  # Skip empty clusters
-        
-        if args.shuffle and features_df is not None:
-            curated_paths = curate_cluster(tracks.copy(), df, features_df)
-        else:
-            curated_paths = tracks.copy()
-            random.shuffle(curated_paths)
-        
-        ordered_clusters.append((genre, curated_paths))
-    
-    # Present summary to the user
+    # Present initial summary to the user
     print("\nClusters summary (in current M3U order):")
-    for genre, tracks in ordered_clusters:
-        print(f"- {genre}: {len(tracks)} tracks")
+    for genre in ordered_genres:
+        print(f"- {genre}: {len(clusters[genre])} tracks")
     
     # Generate and print the comma-separated Clusters list
-    clusters_list = ", ".join([format_genre_name(genre) for genre, _ in ordered_clusters])
+    clusters_list = ", ".join([format_genre_name(genre) for genre in ordered_genres])
     print(f"\nClusters list: {clusters_list}")
     
     # Prompt user for confirmation or modification
@@ -442,46 +427,19 @@ def generate_curated_m3u(args: SimpleNamespace) -> None:
                     print("Saved genre order does not match current playlist genres. Proceeding with the existing order.")
                 else:
                     # Reorder based on saved order
-                    ordered_genres_user = valid_saved_order.copy()
-                    remaining_genres = [genre for genre in ordered_genres if genre not in ordered_genres_user]
-                    ordered_genres_user.extend(remaining_genres)
-                    
-                    # Recreate ordered_clusters based on saved order
-                    ordered_clusters = []
-                    for genre in ordered_genres_user:
-                        tracks = clusters.get(genre, [])
-                        if not tracks:
-                            continue  # Skip empty clusters
-                        
-                        if args.shuffle and features_df is not None:
-                            curated_paths = curate_cluster(tracks.copy(), df, features_df)
-                        else:
-                            curated_paths = tracks.copy()
-                            random.shuffle(curated_paths)
-                        
-                        ordered_clusters.append((genre, curated_paths))
+                    ordered_genres = valid_saved_order.copy()
+                    remaining_genres = [genre for genre in clusters if genre not in ordered_genres]
+                    ordered_genres.extend(remaining_genres)
                     
                     # Present updated summary
                     print("\nUpdated Clusters summary (using saved genre order):")
-                    for genre, tracks in ordered_clusters:
-                        print(f"- {genre}: {len(tracks)} tracks")
-                    
-                    # Generate and print the updated comma-separated Clusters list
-                    updated_clusters_list = ", ".join([format_genre_name(genre) for genre, _ in ordered_clusters])
-                    print(f"\nClusters list: {updated_clusters_list}")
-                    
-                    # Proceed to write the M3U file
-                    output_file = csv_file.with_name(csv_file.stem + '_curated.m3u')
-                    write_m3u(ordered_clusters, output_file, csv_file.parent)
-                    
-                    print(f"\nCurated M3U playlist created: {output_file}")
-                    print_summary(ordered_clusters)
-                    return  # Exit after using saved order
+                    for genre in ordered_genres:
+                        print(f"- {genre}: {len(clusters[genre])} tracks")
             else:
                 print("No saved genre order found. Please enter a new genre order.")
         
-        # Check if the user entered a path to a JSON file
         elif new_order_input.endswith('.json'):
+            # Import from JSON file
             json_path = Path(new_order_input)
             if json_path.is_file():
                 try:
@@ -501,43 +459,14 @@ def generate_curated_m3u(args: SimpleNamespace) -> None:
                         
                         if valid_genres:
                             # Reorder based on JSON file
-                            ordered_genres_user = valid_genres.copy()
-                            remaining_genres = [genre for genre in ordered_genres if genre not in ordered_genres_user]
-                            ordered_genres_user.extend(remaining_genres)
-                            
-                            # Recreate ordered_clusters based on JSON order
-                            ordered_clusters = []
-                            for genre in ordered_genres_user:
-                                tracks = clusters.get(genre, [])
-                                if not tracks:
-                                    continue  # Skip empty clusters
-                                
-                                if args.shuffle and features_df is not None:
-                                    curated_paths = curate_cluster(tracks.copy(), df, features_df)
-                                else:
-                                    curated_paths = tracks.copy()
-                                    random.shuffle(curated_paths)
-                                
-                                ordered_clusters.append((genre, curated_paths))
+                            ordered_genres = valid_genres.copy()
+                            remaining_genres = [genre for genre in clusters if genre not in ordered_genres]
+                            ordered_genres.extend(remaining_genres)
                             
                             # Present updated summary
                             print("\nUpdated Clusters summary (using specified JSON genre order):")
-                            for genre, tracks in ordered_clusters:
-                                print(f"- {genre}: {len(tracks)} tracks")
-                            
-                            # Generate and print the updated comma-separated Clusters list
-                            updated_clusters_list = ", ".join([format_genre_name(genre) for genre, _ in ordered_clusters])
-                            print(f"\nClusters list: {updated_clusters_list}")
-                            
-                            # Proceed to write the M3U file
-                            output_file = csv_file.with_name(csv_file.stem + '_curated.m3u')
-                            write_m3u(ordered_clusters, output_file, csv_file.parent)
-                            
-                            print(f"\nCurated M3U playlist created: {output_file}")
-                            print_summary(ordered_clusters)
-                            return  # Exit after using specified JSON order
-                        else:
-                            print("No valid genres found in the specified JSON file. Proceeding with the existing order.")
+                            for genre in ordered_genres:
+                                print(f"- {genre}: {len(clusters[genre])} tracks")
                     else:
                         print("Invalid genre order format in the specified JSON file. Please ensure it contains a 'preferred_genre_order' list.")
                 except Exception as e:
@@ -546,9 +475,8 @@ def generate_curated_m3u(args: SimpleNamespace) -> None:
             else:
                 print(f"The specified JSON file '{json_path}' does not exist. Please enter a valid path.")
         
-        # User entered a new genre order manually
         else:
-            # Process the manually entered genre order
+            # User entered a new genre order manually
             new_preferred_order = [genre.strip().lower() for genre in new_order_input.split(",") if genre.strip()]
             
             if new_preferred_order:
@@ -561,33 +489,14 @@ def generate_curated_m3u(args: SimpleNamespace) -> None:
                 
                 if valid_genres:
                     # Reorder based on user input
-                    ordered_genres_user = valid_genres.copy()
-                    remaining_genres = [genre for genre in ordered_genres if genre not in ordered_genres_user]
-                    ordered_genres_user.extend(remaining_genres)
-                    
-                    # Recreate ordered_clusters based on user-defined order
-                    ordered_clusters = []
-                    for genre in ordered_genres_user:
-                        tracks = clusters.get(genre, [])
-                        if not tracks:
-                            continue  # Skip empty clusters
-                        
-                        if args.shuffle and features_df is not None:
-                            curated_paths = curate_cluster(tracks.copy(), df, features_df)
-                        else:
-                            curated_paths = tracks.copy()
-                            random.shuffle(curated_paths)
-                        
-                        ordered_clusters.append((genre, curated_paths))
+                    ordered_genres = valid_genres.copy()
+                    remaining_genres = [genre for genre in clusters if genre not in ordered_genres]
+                    ordered_genres.extend(remaining_genres)
                     
                     # Present updated summary
                     print("\nUpdated Clusters summary (in new M3U order):")
-                    for genre, tracks in ordered_clusters:
-                        print(f"- {genre}: {len(tracks)} tracks")
-                    
-                    # Generate and print the updated comma-separated Clusters list
-                    updated_clusters_list = ", ".join([format_genre_name(genre) for genre, _ in ordered_clusters])
-                    print(f"\nClusters list: {updated_clusters_list}")
+                    for genre in ordered_genres:
+                        print(f"- {genre}: {len(clusters[genre])} tracks")
                     
                     # Offer to save the new order
                     save_choice = input("\nWould you like to save this new genre order for future use? (y/n): ").strip().lower()
@@ -599,15 +508,29 @@ def generate_curated_m3u(args: SimpleNamespace) -> None:
                         save_genre_order(preferred_genre_order=new_preferred_order)
             else:
                 print("No genre order entered. Proceeding with the existing order.")
+
+    # Apply track-by-track curation after finalizing genre order
+    ordered_clusters = []
+    for genre in ordered_genres:
+        tracks = clusters.get(genre, [])
+        if not tracks:
+            continue  # Skip empty clusters
+        
+        if args.shuffle and features_df is not None:
+            curated_paths = curate_cluster(tracks.copy(), df, features_df)
+        else:
+            curated_paths = tracks.copy()
+            random.shuffle(curated_paths)
+        
+        ordered_clusters.append((genre, curated_paths))
     
-    # Proceed to write the M3U file only if the user did not modify or after modification has been handled
-    # If the user modified and the function didn't return, write the M3U here
+    # Generate the M3U file
     output_file = csv_file.with_name(csv_file.stem + '_curated.m3u')
     write_m3u(ordered_clusters, output_file, csv_file.parent)
     
     print(f"\nCurated M3U playlist created: {output_file}")
     print_summary(ordered_clusters)
-    
+
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Generate a curated M3U playlist from a CSV file.")
