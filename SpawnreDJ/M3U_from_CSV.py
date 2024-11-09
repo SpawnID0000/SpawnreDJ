@@ -286,7 +286,7 @@ def save_genre_order(config_path='genre_order.json', preferred_genre_order: Opti
     if preferred_genre_order:
         try:
             # Store genre names in their original (title case) format for readability
-            config = {'preferred_genre_order': [genre.replace('-', ' ').title() for genre in preferred_genre_order]}
+            config = {'preferred_genre_order': [genre.title() for genre in preferred_genre_order]}
             with open(config_path, 'w') as f:
                 json.dump(config, f, indent=4)
             logger.info(f"Preferred genre order saved to '{config_path}'.")
@@ -310,6 +310,8 @@ def load_saved_genre_order(config_path='genre_order.json') -> Optional[List[str]
                 # Standardize genre names: lowercase and strip whitespace
                 preferred_order = [genre.lower().strip() for genre in preferred_order]
                 logger.info(f"Loaded saved genre order from '{config_path}'.")
+                # Debugging: Print loaded order
+                print(f"Loaded genre order: {preferred_order}")
                 return preferred_order
             else:
                 logger.warning(f"'preferred_genre_order' not found or invalid in '{config_path}'.")
@@ -414,7 +416,13 @@ def generate_curated_m3u(args: SimpleNamespace) -> None:
     print(f"\nClusters list: {clusters_list}")
     
     # Prompt user for confirmation or modification
-    user_choice = input("\nWould you like to modify the genre order? (y/n): ").strip().lower()
+    while True:
+        user_choice = input("\nWould you like to modify the genre order? (y/n): ").strip().lower()
+        if user_choice in ['y', 'n']:
+            break
+        else:
+            print("Invalid input. Please enter 'y' for yes or 'n' for no.")
+    
     if user_choice == 'y':
         # Allow user to input a new genre order or recall saved order
         print("\nEnter your preferred genre order, separated by commas.")
@@ -521,11 +529,6 @@ def generate_curated_m3u(args: SimpleNamespace) -> None:
                             updated_clusters_list = ", ".join([format_genre_name(genre) for genre, _ in ordered_clusters])
                             print(f"\nClusters list: {updated_clusters_list}")
                             
-                            # Offer to save the new order
-                            save_choice = input("\nWould you like to save this new genre order for future use? (y/n): ").strip().lower()
-                            if save_choice == 'y':
-                                save_genre_order(preferred_genre_order=new_preferred_order)
-                            
                             # Proceed to write the M3U file
                             output_file = csv_file.with_name(csv_file.stem + '_curated.m3u')
                             write_m3u(ordered_clusters, output_file, csv_file.parent)
@@ -588,21 +591,33 @@ def generate_curated_m3u(args: SimpleNamespace) -> None:
                     
                     # Offer to save the new order
                     save_choice = input("\nWould you like to save this new genre order for future use? (y/n): ").strip().lower()
+                    while save_choice not in ['y', 'n']:
+                        print("Invalid input. Please enter 'y' for yes or 'n' for no.")
+                        save_choice = input("Would you like to save this new genre order for future use? (y/n): ").strip().lower()
+                    
                     if save_choice == 'y':
                         save_genre_order(preferred_genre_order=new_preferred_order)
             else:
                 print("No genre order entered. Proceeding with the existing order.")
     
-    if __name__ == "__main__":
-        import argparse
-        parser = argparse.ArgumentParser(description="Generate a curated M3U playlist from a CSV file.")
-        parser.add_argument("csv_file", type=str, help="Path to the input CSV file")
-        parser.add_argument("-loved_csv", type=str, help="Path to the _loved.csv file (optional)", default=None)
-        parser.add_argument("-shuffle", action="store_true", help="Curate the tracks within each cluster based on audio features")
-        args = parser.parse_args()
-        
-        generate_curated_m3u(SimpleNamespace(
-            csv_file=sanitize_path(args.csv_file),
-            loved_csv=sanitize_path(args.loved_csv) if args.loved_csv else None,
-            shuffle=args.shuffle
-        ))
+    # Proceed to write the M3U file only if the user did not modify or after modification has been handled
+    # If the user modified and the function didn't return, write the M3U here
+    output_file = csv_file.with_name(csv_file.stem + '_curated.m3u')
+    write_m3u(ordered_clusters, output_file, csv_file.parent)
+    
+    print(f"\nCurated M3U playlist created: {output_file}")
+    print_summary(ordered_clusters)
+    
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description="Generate a curated M3U playlist from a CSV file.")
+    parser.add_argument("csv_file", type=str, help="Path to the input CSV file")
+    parser.add_argument("-loved_csv", type=str, help="Path to the _loved.csv file (optional)", default=None)
+    parser.add_argument("-shuffle", action="store_true", help="Curate the tracks within each cluster based on audio features")
+    args = parser.parse_args()
+    
+    generate_curated_m3u(SimpleNamespace(
+        csv_file=sanitize_path(args.csv_file),
+        loved_csv=sanitize_path(args.loved_csv) if args.loved_csv else None,
+        shuffle=args.shuffle
+    ))
