@@ -57,21 +57,22 @@ def get_related_genres(current_genre: str, genre_mapping: Dict[str, Dict], genre
                 related_genres.append(related_genre)
     return related_genres
 
-def create_clusters(df: pd.DataFrame, loved_csv: Optional[Path] = None, loved_categories: Optional[List[str]] = None) -> Dict[str, List[str]]:
+def create_clusters(df: pd.DataFrame, loved_categories: Optional[List[str]] = None) -> Dict[str, List[str]]:
     clusters = {}
     
-    # Load the _loved.csv file if provided to filter by loved status
-    loved_options = {}
-    if loved_csv and loved_csv.exists() and loved_categories:
-        loved_df = load_csv(loved_csv)
-        if not loved_df.empty:
-            loved_options = {
-                'tracks': loved_df['loved_tracks'].str.lower() == 'yes',
-                'albums': loved_df['loved_albums'].str.lower() == 'yes',
-                'artists': loved_df['loved_artists'].str.lower() == 'yes'
-            }
+    # Load the loved status directly from the main DataFrame
+    if loved_categories:
+        logger.info(f"Filtering tracks based on loved categories: {loved_categories}")
+        # Create a boolean mask for loved tracks
+        masks = [df[f'loved_{category}'] == 'yes' for category in loved_categories if f'loved_{category}' in df.columns]
+        if masks:
+            combined_mask = masks[0]
+            for mask in masks[1:]:
+                combined_mask = combined_mask | mask
+            df = df[combined_mask]
+            logger.info(f"Number of tracks after applying loved filters: {len(df)}")
         else:
-            logger.warning(f"Loved CSV file '{loved_csv}' is empty.")
+            logger.warning("No valid loved categories found in the main CSV. Proceeding without loved filtering.")
     
     logger.info(f"Processing {len(df)} rows from the CSV file.")
     
@@ -82,18 +83,6 @@ def create_clusters(df: pd.DataFrame, loved_csv: Optional[Path] = None, loved_ca
         # Initialize the genre cluster if not present
         if genre not in clusters:
             clusters[genre] = []
-        
-        # Determine if the track should be included based on loved categories
-        include_track = True
-        if loved_options and loved_categories:
-            is_loved = False
-            for category in loved_categories:
-                if category in loved_options and loved_options[category].iloc[index]:
-                    is_loved = True
-                    break
-            include_track = is_loved
-            if not include_track:
-                continue  # Skip adding this track as it does not meet loved criteria
         
         clusters[genre].append(row['file_path'])
     
@@ -159,11 +148,11 @@ def curate_cluster(cluster: List[str], main_df: pd.DataFrame, features_df: pd.Da
         # Normalize the file path for comparison
         normalized_current_path = Path(current_file_path).as_posix().lower()
         current_row = main_df[main_df['file_path'].str.lower() == normalized_current_path]
-    
+
         if current_row.empty:
             logger.error(f"Current file path '{current_file_path}' not found in main CSV.")
             break  # Alternatively, continue to the next track
-    
+
         current_track = current_row['track'].values[0]
         current_artist = current_row['artist'].values[0]
         unique_current_track = f"{current_track.strip().lower().replace(' ', '-').replace('_', '-')}_{current_artist.strip().lower().replace(' ', '-').replace('_', '-')}"
@@ -363,22 +352,18 @@ def generate_curated_m3u(args: SimpleNamespace) -> None:
         logger.error(f"'file_path' column is missing in the main CSV file '{csv_file}'. Please check the CSV structure.")
         return
     
-    features_file = csv_file.with_name(csv_file.stem + '_features.csv')
+    features_file = csv_file  # Since features are now in the main CSV
     features_df = None
-    if features_file.exists():
-        features_df = load_csv(features_file)
-        if 'track' not in features_df.columns or 'artist' not in features_df.columns:
-            logger.error(f"'track' and 'artist' columns are missing in the features CSV file '{features_file}'. Please check the CSV structure.")
-            return
-        features_df = clean_features_df(features_df)
+    if all(col in df.columns for col in feature_columns):
+        features_df = clean_features_df(df)
         if features_df.empty:
-            logger.error("Features DataFrame is empty after cleaning. Check the features CSV.")
+            logger.error("Features DataFrame is empty after cleaning. Check the main CSV.")
             return
-        logger.info("Successfully loaded and cleaned features CSV for curation support.")
+        logger.info("Successfully loaded and cleaned features from the main CSV for curation support.")
     else:
-        logger.warning(f"Features file '{features_file}' not found. Proceeding without features.")
+        logger.warning(f"Audio feature columns not found in the main CSV '{csv_file}'. Proceeding without features.")
     
-    clusters = create_clusters(df, loved_csv=args.loved_csv, loved_categories=args.loved)
+    clusters = create_clusters(df, loved_categories=args.loved)
     
     if not clusters:
         logger.error("No clusters found. Exiting playlist generation.")
@@ -535,12 +520,12 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Generate a curated M3U playlist from a CSV file.")
     parser.add_argument("csv_file", type=str, help="Path to the input CSV file")
-    parser.add_argument("-loved_csv", type=str, help="Path to the _loved.csv file (optional)", default=None)
     parser.add_argument("-shuffle", action="store_true", help="Curate the tracks within each cluster based on audio features")
+    parser.add_argument("-loved", nargs='*', help="Filter by loved tracks, albums, or artists (e.g., 'tracks albums')", default=None)
     args = parser.parse_args()
     
     generate_curated_m3u(SimpleNamespace(
         csv_file=sanitize_path(args.csv_file),
-        loved_csv=sanitize_path(args.loved_csv) if args.loved_csv else None,
+        loved_categories=args.loved,
         shuffle=args.shuffle
     ))
