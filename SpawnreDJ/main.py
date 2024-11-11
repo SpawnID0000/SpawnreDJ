@@ -125,7 +125,7 @@ def run_analyze_m3u(credentials, args):
         spotify_client_secret=credentials['spotify_client_secret'],
         generate_stats=args.stats,
         fetch_features=args.features,
-        fetch_analysis=args.analysis,
+        #fetch_analysis=args.analysis,
         post=args.post,
         csv_file=args.csv_file,
         loved_tracks=args.loved_tracks,
@@ -137,19 +137,8 @@ def run_analyze_m3u(credentials, args):
 def run_spawnre_csv(csv_file, shuffle=False, loved=None):
     csv_dir = os.path.dirname(os.path.abspath(csv_file))
     
-    if loved:
-        loved_csv = os.path.join(csv_dir, os.path.splitext(os.path.basename(csv_file))[0] + '_loved.csv')
-        if not os.path.exists(loved_csv):
-            print(f"Loved CSV file '{loved_csv}' does not exist. Proceeding without loved filtering.")
-            loved_csv = None
-        else:
-            loved_csv = Path(loved_csv)  # Convert to Path object here
-    else:
-        loved_csv = None
-    
     args = SimpleNamespace(
         csv_file=csv_file,
-        loved_csv=loved_csv,  # Pass as Path object
         shuffle=shuffle,
         loved=loved  # Ensure 'loved' is added to args here
     )
@@ -247,7 +236,7 @@ def main():
         music_directory = input("Enter the root directory of the music files: ").strip()
         generate_stats = input("Generate stats CSV? (y/n): ").strip().lower() == 'y'
         fetch_features = input("Fetch Spotify audio features data? (y/n): ").strip().lower() == 'y'
-        fetch_analysis = input("Fetch Spotify audio analysis data? (y/n): ").strip().lower() == 'y'
+        #fetch_analysis = input("Fetch Spotify audio analysis data? (y/n): ").strip().lower() == 'y'
         post = input("Skip genre extraction and use an existing CSV file? (y/n): ").strip().lower() == 'y'
         
         csv_file = None
@@ -267,7 +256,7 @@ def main():
             music_directory=music_directory,
             stats=generate_stats,
             features=fetch_features,
-            analysis=fetch_analysis,
+            #analysis=fetch_analysis,
             post=post,
             csv_file=csv_file,  # Add the CSV file path here
             loved_tracks=loved_tracks,
@@ -276,7 +265,7 @@ def main():
         )
         run_analyze_m3u(credentials, args)
     elif choice == "4":
-        csv_file = input("Enter the path to the main CSV file (required): ").strip()
+        csv_file = input("Enter the path to the CSV file (required): ").strip()
         shuffle = input("Curate the tracks within each cluster? (y/n): ").strip().lower() == 'y'
         loved_input = input("Filter by loved tracks, albums, or artists (e.g., 'tracks albums') or leave blank: ").strip()
         loved = loved_input.split() if loved_input else None
