@@ -9,7 +9,7 @@ long_description = (this_directory / "README.md").read_text()
 
 setup(
     name='SpawnreDJ',
-    version='0.4.7',  # Increment version number as appropriate
+    version='0.4.8',  # Increment version number as appropriate
     packages=find_packages(),
     install_requires=[
         'mutagen>=1.45.1',
