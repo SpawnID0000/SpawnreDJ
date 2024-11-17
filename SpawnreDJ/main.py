@@ -159,13 +159,12 @@ def main():
     else:
         print("API credentials loaded from APIds.env.")
 
-    print("\nSpawnreDJ\n")
-    print("Welcome to SpawnreDJ!")
+    print("\nWelcome to SpawnreDJ!")
     print("\nOptions:")
     print("1. Generate an M3U playlist from a folder")
-    print("2. Copy files from an M3U playlist to a new folder")
-    print("3. Analyze M3U file for genre & audio features")
-    print("4. Generate a genre-clustered M3U playlist from a CSV file")
+    print("2. Analyze an M3U playlist and save musical characteristics in a CSV file")
+    print("3. Generate a curated M3U playlist from a pre-generated analysis CSV file")
+    print("4. Copy files from an M3U playlist to a new folder, using filename prefix to order tracks")
 
     choice = input("\nEnter your choice (or leave blank to exit): ").strip()
 
@@ -191,6 +190,45 @@ def main():
 
         run_m3u_from_folder(music_dir, flip, path_prefix=path_prefix_input, m3u_file_path_str=m3u_file_path)
     elif choice == "2":
+        m3u_file = input("Enter the path to the M3U playlist file: ").strip()
+        music_directory = input("Enter the root directory of the music files: ").strip()
+        generate_stats = input("Generate stats CSV? (y/n): ").strip().lower() == 'y'
+        fetch_features = input("Fetch Spotify audio features data? (y/n): ").strip().lower() == 'y'
+        #fetch_analysis = input("Fetch Spotify audio analysis data? (y/n): ").strip().lower() == 'y'
+        post = input("Skip genre extraction and use an existing CSV file? (y/n): ").strip().lower() == 'y'
+        
+        csv_file = None
+        if post:
+            csv_file = input("Enter the path to the existing CSV file: ").strip()
+            if not os.path.isfile(csv_file):
+                print(f"Error: The CSV file '{csv_file}' does not exist.")
+                return
+        
+        loved_tracks = input("Enter the path to the loved tracks M3U file (or leave blank to skip): ").strip() or None
+        loved_albums = input("Enter the path to the loved albums M3U file (or leave blank to skip): ").strip() or None
+        loved_artists = input("Enter the path to the loved artists M3U file (or leave blank to skip): ").strip() or None
+        
+        # Create a SimpleNamespace object to hold the arguments
+        args = SimpleNamespace(
+            m3u_file=m3u_file,
+            music_directory=music_directory,
+            stats=generate_stats,
+            features=fetch_features,
+            #analysis=fetch_analysis,
+            post=post,
+            csv_file=csv_file,  # Add the CSV file path here
+            loved_tracks=loved_tracks,
+            loved_albums=loved_albums,
+            loved_artists=loved_artists
+        )
+        run_analyze_m3u(credentials, args)
+    elif choice == "3":
+        csv_file = input("Enter the path to the CSV file (required): ").strip()
+        shuffle = input("Curate the tracks within each cluster? (y/n): ").strip().lower() == 'y'
+        loved_input = input("Filter by loved tracks, albums, or artists (e.g., 'tracks albums') or leave blank: ").strip()
+        loved = loved_input.split() if loved_input else None
+        run_spawnre_csv(csv_file=csv_file, shuffle=shuffle, loved=loved)
+    elif choice == "4":
         m3u_file = input("Enter the path to the M3U playlist file: ").strip()
         music_dir = input("Enter the path to the source music directory: ").strip()
         output_folder = input("Enter the path to the destination folder: ").strip()
@@ -231,45 +269,6 @@ def main():
             output_folder=str(output_folder_path),
             max_size_gb=max_size_gb
         )
-    elif choice == "3":
-        m3u_file = input("Enter the path to the M3U playlist file: ").strip()
-        music_directory = input("Enter the root directory of the music files: ").strip()
-        generate_stats = input("Generate stats CSV? (y/n): ").strip().lower() == 'y'
-        fetch_features = input("Fetch Spotify audio features data? (y/n): ").strip().lower() == 'y'
-        #fetch_analysis = input("Fetch Spotify audio analysis data? (y/n): ").strip().lower() == 'y'
-        post = input("Skip genre extraction and use an existing CSV file? (y/n): ").strip().lower() == 'y'
-        
-        csv_file = None
-        if post:
-            csv_file = input("Enter the path to the existing CSV file: ").strip()
-            if not os.path.isfile(csv_file):
-                print(f"Error: The CSV file '{csv_file}' does not exist.")
-                return
-        
-        loved_tracks = input("Enter the path to the loved tracks M3U file (or leave blank to skip): ").strip() or None
-        loved_albums = input("Enter the path to the loved albums M3U file (or leave blank to skip): ").strip() or None
-        loved_artists = input("Enter the path to the loved artists M3U file (or leave blank to skip): ").strip() or None
-        
-        # Create a SimpleNamespace object to hold the arguments
-        args = SimpleNamespace(
-            m3u_file=m3u_file,
-            music_directory=music_directory,
-            stats=generate_stats,
-            features=fetch_features,
-            #analysis=fetch_analysis,
-            post=post,
-            csv_file=csv_file,  # Add the CSV file path here
-            loved_tracks=loved_tracks,
-            loved_albums=loved_albums,
-            loved_artists=loved_artists
-        )
-        run_analyze_m3u(credentials, args)
-    elif choice == "4":
-        csv_file = input("Enter the path to the CSV file (required): ").strip()
-        shuffle = input("Curate the tracks within each cluster? (y/n): ").strip().lower() == 'y'
-        loved_input = input("Filter by loved tracks, albums, or artists (e.g., 'tracks albums') or leave blank: ").strip()
-        loved = loved_input.split() if loved_input else None
-        run_spawnre_csv(csv_file=csv_file, shuffle=shuffle, loved=loved)
     else:
         print("Invalid choice. Please select a valid option.")
 
