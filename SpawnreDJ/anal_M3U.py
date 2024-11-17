@@ -7,6 +7,7 @@ import time
 import random
 from typing import List, Tuple, Dict, Any, Optional
 from types import SimpleNamespace
+import ast  # Added for safe evaluation of spawnre field
 
 from mutagen.mp4 import MP4
 import spotipy
@@ -21,6 +22,9 @@ import warnings
 warnings.filterwarnings("ignore", message="The json format is non-official and may change at any time")
 
 from SpawnreDJ.dic_spawnre import genre_mapping
+
+# Global cache
+spotify_artist_genre_cache: Dict[str, List[str]] = {}
 
 # Initialize module-specific logger
 logger = logging.getLogger(__name__)
@@ -418,7 +422,7 @@ def fetch_musicbrainz_ids_from_api(artist_name: str, track_name: str, album_name
 
 def populate_missing_spotify_ids(data: List[Dict[str, Any]], sp: spotipy.Spotify) -> None:
     """
-    Populate the 'spotify_track_ID' for tracks missing it.
+    Populate the 'spotify_track_ID', 'spotify_artist_ID', 'spotify_duration_ms', and 'spotify_genre_#s' for tracks missing them.
     """
     missing_ids = [track_data for track_data in data if not track_data.get('spotify_track_ID')]
     logger.info(f"Found {len(missing_ids)} tracks with missing Spotify Track IDs.")
@@ -435,8 +439,30 @@ def populate_missing_spotify_ids(data: List[Dict[str, Any]], sp: spotipy.Spotify
             if result['tracks']['items']:
                 track_item = result['tracks']['items'][0]
                 spotify_track_id = track_item['id']
+                spotify_artist_id = track_item['artists'][0]['id'] if track_item['artists'] else ''
+                spotify_duration_ms = track_item.get('duration_ms', 0)
+                
+                # Fetch artist genres with caching
+                if spotify_artist_id in spotify_artist_genre_cache:
+                    spotify_genres = spotify_artist_genre_cache[spotify_artist_id]
+                    logger.debug(f"Genres for artist ID {spotify_artist_id} fetched from cache.")
+                else:
+                    artist_info = sp.artist(spotify_artist_id) if spotify_artist_id else {}
+                    spotify_genres = artist_info.get('genres', [])
+                    spotify_artist_genre_cache[spotify_artist_id] = spotify_genres
+                    logger.debug(f"Fetched genres for artist ID {spotify_artist_id}: {spotify_genres}")
+                
+                # Populate the track data
                 track_data['spotify_track_ID'] = spotify_track_id
-                logger.info(f"Populated Spotify Track ID for '{artist} - {track}': {spotify_track_id}")
+                track_data['spotify_artist_ID'] = spotify_artist_id
+                track_data['spotify_duration_ms'] = spotify_duration_ms
+                
+                # Populate up to 5 genres
+                for i in range(1, 6):
+                    genre_key = f'spotify_genre_{i}'
+                    track_data[genre_key] = spotify_genres[i-1] if i-1 < len(spotify_genres) else ''
+                
+                logger.info(f"Populated Spotify data for '{artist} - {track}': Track ID = {spotify_track_id}, Artist ID = {spotify_artist_id}, Duration = {spotify_duration_ms} ms")
             else:
                 logger.warning(f"No Spotify Track found for '{artist} - {track}'.")
         except spotipy.exceptions.SpotifyException as e:
@@ -529,7 +555,7 @@ def analyze_m3u(
             logger.error(f"Error loading CSV file '{csv_path}': {e}")
             return []
         
-        # Populate missing Spotify Track IDs
+        # Populate missing Spotify Track IDs and other Spotify fields
         populate_missing_spotify_ids(data, sp)
         
         # Fetch audio features if requested
@@ -557,7 +583,7 @@ def analyze_m3u(
                         'duration_ms': feature.get('duration_ms', ''),
                         'time_signature': feature.get('time_signature', '')
                     })
-            
+        
             logger.info("Completed fetching Spotify audio features.")
         
         # Process loved metadata
@@ -582,9 +608,38 @@ def analyze_m3u(
             track_data['loved_tracks'] = is_loved_track
             track_data['loved_albums'] = is_loved_album
             track_data['loved_artists'] = is_loved_artist
+        
+        # Initialize stats and genre_counts
+        stats['Total Tracks'] = len(data)
+        stats['Tracks with Genres'] = 0
+        genre_counts = {}  # Reset genre counts
+
+        for track_data in data:
+            # Assume 'spawnre' is stored as a string representation of a list in the CSV
+            spawnre_str = track_data.get('spawnre', '[]')
+            try:
+                # Safely evaluate the string to a Python list
+                spawnre = ast.literal_eval(spawnre_str)
+                if isinstance(spawnre, list) and spawnre:
+                    stats['Tracks with Genres'] += 1
+                    for genre in spawnre:
+                        genre_lower = genre.lower()
+                        genre_counts[genre_lower] = genre_counts.get(genre_lower, 0) + 1
+            except (ValueError, SyntaxError):
+                # Handle cases where 'spawnre' isn't a valid list
+                if track_data.get('spawnre'):
+                    stats['Tracks with Genres'] += 1
+                    genre = track_data['spawnre'].lower()
+                    genre_counts[genre] = genre_counts.get(genre, 0) + 1
+
+        logger.info(f"Total Tracks: {stats['Total Tracks']}")
+        logger.info(f"Tracks with Genres: {stats['Tracks with Genres']}")
 
         # Determine the output CSV path (overwrite the existing CSV)
         output_csv_path = csv_path
+
+        # Determine the stats CSV path
+        stats_csv_path = csv_path.with_stem(csv_path.stem + '_stats').with_suffix('.csv')
     else:
         # Existing behavior: parse M3U and extract genres
         try:
@@ -840,10 +895,10 @@ def analyze_m3u(
     # Determine the most frequent sub-genre or main genre for each artist (if not in post mode)
     if not post:
         for artist, subgenre_counts in artist_subgenre_count.items():
-            if subgenre_counts:
-                most_frequent_subgenre = max(subgenre_counts, key=subgenre_counts.get)
-                artist_spawnre_tags[artist] = most_frequent_subgenre
+            if artist_spawnre_tags.get(artist, ''):
+                most_frequent_subgenre = artist_spawnre_tags[artist]
             else:
+                # Fallback if not set
                 main_genre_counts = {}
                 for track_data in data:
                     if track_data['artist'] == artist:
@@ -853,64 +908,22 @@ def analyze_m3u(
                                     main_genre_counts[genre] = main_genre_counts.get(genre, 0) + 1
                 if main_genre_counts:
                     most_frequent_main_genre = max(main_genre_counts, key=main_genre_counts.get)
-                    artist_spawnre_tags[artist] = most_frequent_main_genre
+                    most_frequent_subgenre = most_frequent_main_genre
                 else:
-                    artist_spawnre_tags[artist] = ''
+                    most_frequent_subgenre = ''
 
-    # Process loved metadata if loved M3U files are provided
-    if loved_tracks_set or loved_albums_set or loved_artists_set:
-        logger.info("Processing loved metadata...")
-        for track_data in data:
-            # Normalize the file path for comparison
-            file_path = Path(track_data.get('file_path', '')).as_posix().lower()
-            normalized_file_path = Path(file_path)
-
-            # Derive album and artist directories
-            album_dir = Path(file_path).parent
-            album_dir_normalized = album_dir.as_posix().lower()
-
-            artist_dir = album_dir.parent
-            artist_dir_normalized = artist_dir.as_posix().lower()
-
-            # Check if the track, album, or artist is "loved"
-            is_loved_track = 'yes' if file_path in loved_tracks_set else 'no'
-            is_loved_album = 'yes' if album_dir_normalized in loved_albums_set else 'no'
-            is_loved_artist = 'yes' if artist_dir_normalized in loved_artists_set else 'no'
-
-            # Add the loved metadata
-            track_data['loved_tracks'] = is_loved_track
-            track_data['loved_albums'] = is_loved_album
-            track_data['loved_artists'] = is_loved_artist
-
-    # Determine the most frequent sub-genre or main genre for each artist
-    for artist, subgenre_counts in artist_subgenre_count.items():
-        if artist_spawnre_tags.get(artist, ''):
-            most_frequent_subgenre = artist_spawnre_tags[artist]
-        else:
-            # Fallback if not set
-            main_genre_counts = {}
+            # Assign spawnre_tag to all tracks by the artist
             for track_data in data:
                 if track_data['artist'] == artist:
-                    for genre in track_data['spawnre']:
-                        for key, value in genre_mapping.items():
-                            if value['Genre'].lower() == genre.lower() and key[1:] == "00":
-                                main_genre_counts[genre] = main_genre_counts.get(genre, 0) + 1
-            if main_genre_counts:
-                most_frequent_main_genre = max(main_genre_counts, key=main_genre_counts.get)
-                most_frequent_subgenre = most_frequent_main_genre
-            else:
-                most_frequent_subgenre = ''
-
-        # Assign spawnre_tag to all tracks by the artist
-        for track_data in data:
-            if track_data['artist'] == artist:
-                track_data['spawnre_tag'] = most_frequent_subgenre
+                    track_data['spawnre_tag'] = most_frequent_subgenre
 
     # Writing the main CSV
     if not post:
         output_csv_path = m3u_path.with_suffix('.csv')
+        stats_csv_path = m3u_path.with_stem(m3u_path.stem + '_stats').with_suffix('.csv')
     else:
         output_csv_path = csv_path
+        stats_csv_path = csv_path.with_stem(csv_path.stem + '_stats').with_suffix('.csv')
 
     fieldnames = [
         'artist', 'album', 'track', 'year', 'spawnre', 'spawnre_hex', 'spawnre_tag', 'embedded_genre',
@@ -944,7 +957,6 @@ def analyze_m3u(
 
     # Writing stats CSV if requested
     if generate_stats:
-        stats_csv_path = m3u_path.with_stem(m3u_path.stem + '_stats').with_suffix('.csv')
         try:
             with stats_csv_path.open('w', newline='', encoding='utf-8') as csvfile:
                 writer = csv.writer(csvfile)
