@@ -15,24 +15,24 @@ def convert_size_to_gb(size_in_bytes: int) -> float:
 def sanitize_path(path: str) -> Path:
     """
     Sanitize the input path by removing backslashes before spaces and normalizing the path.
-    
+
     Args:
         path (str): The original path string input by the user.
-        
+
     Returns:
         Path: The sanitized Path object.
     """
     try:
         # Replace escaped spaces (\ ) with regular spaces
         sanitized_str = path.replace('\\ ', ' ')
-        
+
         # Additionally, handle other common escape characters if necessary
         # For example, replace double backslashes with single backslash
         sanitized_str = sanitized_str.replace('\\\\', '\\')
-        
-        # Create a Path object and normalize it
-        sanitized_path = Path(sanitized_str).expanduser().resolve()
-        
+
+        # Create a Path object without resolving to absolute path yet
+        sanitized_path = Path(sanitized_str).expanduser()
+
         return sanitized_path
     except Exception as e:
         logger.error(f"Exception in sanitize_path: {e}")
@@ -41,11 +41,11 @@ def sanitize_path(path: str) -> Path:
 def validate_path(path: Path, description: str) -> bool:
     """
     Validate that the provided path exists and is of the expected type.
-    
+
     Args:
         path (Path): The Path object to validate.
         description (str): Description of the path for logging purposes.
-    
+
     Returns:
         bool: True if valid, False otherwise.
     """
@@ -65,12 +65,13 @@ def copy_tracks_with_sequence(
     music_dir: str,
     output_folder: str,
     max_size_gb: Optional[float] = None,
-    dry_run: bool = False
+    dry_run: bool = False,
+    base_path: Optional[str] = None  # New parameter for base path
 ) -> Tuple[int, int]:
     """
     Copy tracks listed in an M3U file from the music directory to the output folder,
     renaming them with a six-digit sequence number.
-    
+
     Args:
         m3u_file (str): Path to the M3U playlist file.
         music_dir (str): Path to the source music directory.
@@ -79,7 +80,9 @@ def copy_tracks_with_sequence(
                                         Defaults to None (no limit).
         dry_run (bool, optional): If True, simulates the copying process without making changes.
                                    Defaults to False.
-    
+        base_path (str, optional): Base path to resolve relative tracks. If None, defaults to
+                                   the M3U file's directory. For Option 2, set this to music_dir.
+
     Returns:
         tuple: (number_of_successful_copies, number_of_failures)
     """
@@ -96,6 +99,17 @@ def copy_tracks_with_sequence(
             return (0, 0)
         if not validate_path(output_dir, "output directory"):
             return (0, 0)
+
+        # Determine the base path for resolving relative paths
+        if base_path:
+            base_path_obj = sanitize_path(base_path).resolve()
+            if not base_path_obj.is_dir():
+                logger.error(f"The specified base path '{base_path_obj}' is not a directory.")
+                return (0, 0)
+            logger.info(f"Using specified base path for resolving relative tracks: {base_path_obj}")
+        else:
+            base_path_obj = m3u_path.parent.resolve()
+            logger.info(f"Using M3U file's directory as base path: {base_path_obj}")
 
         # Ensure the output "Music" subfolder exists
         music_folder = output_dir / 'Music'
@@ -121,17 +135,244 @@ def copy_tracks_with_sequence(
 
         # Copy each track to the output folder with the new filename
         for idx, relative_track in enumerate(tracks):
-            # Sanitize relative track path
+            # Sanitize relative track path without resolving to absolute
             relative_track_path = sanitize_path(relative_track)
 
-            # Resolve the absolute path of the track
-            track_path = (music_directory / relative_track_path).resolve()
+            # Resolve the absolute path of the track relative to the base path
+            track_path = (base_path_obj / relative_track_path).resolve()
+
+            # Ensure the resolved track path is within the specified music directory
+            try:
+                track_path.relative_to(music_directory.resolve())
+            except ValueError:
+                logger.warning(f"Track '{track_path}' is outside the music directory '{music_directory.resolve()}'. Skipping.")
+                failure_count += 1
+                continue
 
             if not track_path.is_file():
                 logger.warning(f"Track not found: {track_path}")
                 failure_count += 1
                 continue
 
+            original_size = track_path.stat().st_size  # File size in bytes
+
+            # Check if adding this track exceeds the max size limit
+            if max_size_bytes and (total_copied_size + original_size) > max_size_bytes:
+                logger.info(f"Max size limit of {max_size_gb} GB reached. Stopping execution.")
+                break
+
+            # Create the new filename with six-digit sequence number
+            sequence_num = f"{idx + 1:06d}"
+            original_filename = track_path.name
+            new_filename = f"{sequence_num} - {original_filename}"
+            new_filepath = music_folder / new_filename
+
+            # Check for duplicate filenames
+            if new_filepath.exists():
+                logger.warning(f"File already exists and will be skipped: {new_filepath}")
+                failure_count += 1
+                continue
+
+            if dry_run:
+                logger.info(f"[Dry Run] Would copy: {track_path} -> {new_filepath} (Size: {original_size} bytes)")
+                success_count += 1
+                total_copied_size += original_size
+                continue
+
+            try:
+                shutil.copy2(track_path, new_filepath)
+
+                # Verify the copied file size
+                copied_size = new_filepath.stat().st_size
+                if copied_size != original_size:
+                    raise IOError(f"File size mismatch after copying {track_path} -> {new_filepath}")
+
+                total_copied_size += copied_size
+                success_count += 1
+                logger.info(f"Copied: {track_path} -> {new_filepath} (Size: {copied_size} bytes)")
+
+                # Log cumulative size in bytes and GB
+                cumulative_size_gb = convert_size_to_gb(total_copied_size)
+                logger.info(f"Cumulative size of copied files: {total_copied_size} bytes ({cumulative_size_gb:.2f} GB)")
+                logger.info("")  # For readability
+
+            except Exception as e:
+                logger.error(f"Error copying {track_path}: {e}")
+                failure_count += 1
+                continue
+
+        logger.info("File copying process complete.")
+        logger.info(f"Total successful copies: {success_count}")
+        logger.info(f"Total failures: {failure_count}")
+        logger.info(f"Total size copied: {total_copied_size} bytes ({convert_size_to_gb(total_copied_size):.2f} GB)")
+        return (success_count, failure_count)
+
+
+    except Exception as e:
+         logger.error(f"An error occurred: {e}")
+         return (0, 0)
+
+def copy_all_tracks_without_sequence(
+    music_dir: str,
+    output_folder: str,
+    max_size_gb: Optional[float] = None,
+    dry_run: bool = False
+) -> Tuple[int, int]:
+    """
+    Copy all tracks from the music directory to the output folder without renaming them.
+
+    Args:
+        music_dir (str): Path to the source music directory.
+        output_folder (str): Path to the destination folder where tracks will be copied.
+        max_size_gb (float, optional): Maximum cumulative size in GB for the copied tracks.
+                                        Defaults to None (no limit).
+        dry_run (bool, optional): If True, simulates the copying process without making changes.
+                                   Defaults to False.
+
+    Returns:
+        tuple: (number_of_successful_copies, number_of_failures)
+    """
+    try:
+        # Sanitize input paths
+        music_directory = sanitize_path(music_dir)
+        output_dir = sanitize_path(output_folder)
+
+        # Validate input paths
+        if not validate_path(music_directory, "music directory"):
+            return (0, 0)
+        if not validate_path(output_dir, "output directory"):
+            return (0, 0)
+
+        # Ensure the output "Music" subfolder exists
+        music_folder = output_dir / 'Music'
+        if not dry_run:
+            music_folder.mkdir(parents=True, exist_ok=True)
+            logger.info(f"Ensured existence of output subfolder: {music_folder}")
+        else:
+            logger.info(f"[Dry Run] Would ensure existence of output subfolder: {music_folder}")
+
+        # Gather all track files from the music directory
+        tracks = [f for f in music_directory.rglob('*') if f.is_file()]
+        logger.info(f"Total tracks to copy: {len(tracks)}")
+
+        # Convert max size to bytes if specified
+        max_size_bytes = max_size_gb * (1024 ** 3) if max_size_gb else None
+        total_copied_size = 0
+
+        # Initialize counters
+        success_count = 0
+        failure_count = 0
+
+        # Copy each track to the output folder without renaming
+        for idx, track_path in enumerate(tracks):
+            original_size = track_path.stat().st_size  # File size in bytes
+
+            # Check if adding this track exceeds the max size limit
+            if max_size_bytes and (total_copied_size + original_size) > max_size_bytes:
+                logger.info(f"Max size limit of {max_size_gb} GB reached. Stopping execution.")
+                break
+
+            # Destination file path without changing the original filename
+            new_filepath = music_folder / track_path.name
+
+            # Check for duplicate filenames
+            if new_filepath.exists():
+                logger.warning(f"File already exists and will be skipped: {new_filepath}")
+                failure_count += 1
+                continue
+
+            if dry_run:
+                logger.info(f"[Dry Run] Would copy: {track_path} -> {new_filepath} (Size: {original_size} bytes)")
+                success_count += 1
+                total_copied_size += original_size
+                continue
+
+            try:
+                shutil.copy2(track_path, new_filepath)
+
+                # Verify the copied file size
+                copied_size = new_filepath.stat().st_size
+                if copied_size != original_size:
+                    raise IOError(f"File size mismatch after copying {track_path} -> {new_filepath}")
+
+                total_copied_size += copied_size
+                success_count += 1
+                logger.info(f"Copied: {track_path} -> {new_filepath} (Size: {copied_size} bytes)")
+
+                # Log cumulative size in bytes and GB
+                cumulative_size_gb = convert_size_to_gb(total_copied_size)
+                logger.info(f"Cumulative size of copied files: {total_copied_size} bytes ({cumulative_size_gb:.2f} GB)")
+                logger.info("")  # For readability
+
+            except Exception as e:
+                logger.error(f"Error copying {track_path}: {e}")
+                failure_count += 1
+                continue
+
+        logger.info("File copying process complete.")
+        logger.info(f"Total successful copies: {success_count}")
+        logger.info(f"Total failures: {failure_count}")
+        logger.info(f"Total size copied: {total_copied_size} bytes ({convert_size_to_gb(total_copied_size):.2f} GB)")
+        return (success_count, failure_count)
+
+    except Exception as e:
+        logger.error(f"An error occurred: {e}")
+        return (0, 0)
+
+def copy_all_tracks_with_sequence(
+    music_dir: str,
+    output_folder: str,
+    max_size_gb: Optional[float] = None,
+    dry_run: bool = False
+) -> Tuple[int, int]:
+    """
+    Copy all tracks from the music directory to the output folder,
+    renaming them with a six-digit sequence number.
+
+    Args:
+        music_dir (str): Path to the source music directory.
+        output_folder (str): Path to the destination folder where tracks will be copied.
+        max_size_gb (float, optional): Maximum cumulative size in GB for the copied tracks.
+                                        Defaults to None (no limit).
+        dry_run (bool, optional): If True, simulates the copying process without making changes.
+                                   Defaults to False.
+
+    Returns:
+        tuple: (number_of_successful_copies, number_of_failures)
+    """
+    try:
+        # Sanitize input paths
+        music_directory = sanitize_path(music_dir)
+        output_dir = sanitize_path(output_folder)
+
+        # Validate input paths
+        if not validate_path(music_directory, "music directory"):
+            return (0, 0)
+        if not validate_path(output_dir, "output directory"):
+            return (0, 0)
+
+        # Ensure the output "Music" subfolder exists
+        music_folder = output_dir / 'Music'
+        if not dry_run:
+            music_folder.mkdir(parents=True, exist_ok=True)
+            logger.info(f"Ensured existence of output subfolder: {music_folder}")
+        else:
+            logger.info(f"[Dry Run] Would ensure existence of output subfolder: {music_folder}")
+
+        # Gather all track files from the music directory
+        tracks = [f for f in music_directory.rglob('*') if f.is_file()]
+        logger.info(f"Total tracks to copy: {len(tracks)}")
+
+        # Convert max size to bytes if specified
+        max_size_bytes = max_size_gb * (1024 ** 3) if max_size_gb else None
+        total_copied_size = 0
+
+        # Initialize counters
+        success_count = 0
+        failure_count = 0
+
+        # Copy each track to the output folder with the new filename
+        for idx, track_path in enumerate(tracks):
             original_size = track_path.stat().st_size  # File size in bytes
 
             # Check if adding this track exceeds the max size limit
