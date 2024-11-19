@@ -385,14 +385,18 @@ def generate_curated_m3u(args: SimpleNamespace) -> None:
     clusters_list = ", ".join([format_genre_name(genre) for genre in ordered_genres])
     print(f"\nClusters list: {clusters_list}")
     
-    # Prompt user for confirmation or modification
+    # Prompt user for confirmation or modification with default 'n'
     while True:
-        user_choice = input("\nWould you like to modify the genre order? (y/n): ").strip().lower()
-        if user_choice in ['y', 'n']:
+        user_input = input("\nWould you like to modify the genre order? (y/n) [n]: ").strip().lower()
+        if user_input == '':
+            user_choice = 'n'
+            break
+        elif user_input in ['y', 'n']:
+            user_choice = user_input
             break
         else:
             print("Invalid input. Please enter 'y' for yes or 'n' for no.")
-    
+
     if user_choice == 'y':
         # Allow user to input a new genre order or recall saved order
         print("\nEnter your preferred genre order, separated by commas.")
@@ -484,10 +488,15 @@ def generate_curated_m3u(args: SimpleNamespace) -> None:
                         print(f"- {genre}: {len(clusters[genre])} tracks")
                     
                     # Offer to save the new order
-                    save_choice = input("\nWould you like to save this new genre order for future use? (y/n): ").strip().lower()
-                    while save_choice not in ['y', 'n']:
-                        print("Invalid input. Please enter 'y' for yes or 'n' for no.")
-                        save_choice = input("Would you like to save this new genre order for future use? (y/n): ").strip().lower()
+                    while True:
+                        save_choice = input("\nWould you like to save this new genre order for future use? (y/n) [n]: ").strip().lower()
+                        if save_choice == '':
+                            save_choice = 'n'
+                            break
+                        elif save_choice in ['y', 'n']:
+                            break
+                        else:
+                            print("Invalid input. Please enter 'y' for yes or 'n' for no.")
                     
                     if save_choice == 'y':
                         save_genre_order(preferred_genre_order=new_preferred_order)
