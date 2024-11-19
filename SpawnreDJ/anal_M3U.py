@@ -580,7 +580,6 @@ def analyze_m3u(
                         'liveness': feature.get('liveness', ''),
                         'valence': feature.get('valence', ''),
                         'tempo': feature.get('tempo', ''),
-                        'duration_ms': feature.get('duration_ms', ''),
                         'time_signature': feature.get('time_signature', '')
                     })
         
@@ -831,7 +830,7 @@ def analyze_m3u(
                 audio_feature_columns = [
                     'danceability', 'energy', 'key', 'loudness',
                     'mode', 'speechiness', 'acousticness', 'instrumentalness',
-                    'liveness', 'valence', 'tempo', 'duration_ms', 'time_signature'
+                    'liveness', 'valence', 'tempo', 'time_signature'
                 ]
                 for feature in audio_feature_columns:
                     track_dict[feature] = ''
@@ -886,7 +885,6 @@ def analyze_m3u(
                     'liveness': feature.get('liveness', ''),
                     'valence': feature.get('valence', ''),
                     'tempo': feature.get('tempo', ''),
-                    'duration_ms': feature.get('duration_ms', ''),
                     'time_signature': feature.get('time_signature', '')
                 })
         
@@ -934,7 +932,7 @@ def analyze_m3u(
         'last_FM_genre_1', 'last_FM_genre_2', 'last_FM_genre_3', 'last_FM_genre_4', 'last_FM_genre_5',
         'musicbrainz_genre_1', 'musicbrainz_genre_2', 'musicbrainz_genre_3', 'musicbrainz_genre_4', 'musicbrainz_genre_5',
         'danceability', 'energy', 'key', 'loudness', 'mode', 'speechiness', 'acousticness',
-        'instrumentalness', 'liveness', 'valence', 'tempo', 'duration_ms', 'time_signature',
+        'instrumentalness', 'liveness', 'valence', 'tempo', 'time_signature',
         'loved_tracks', 'loved_albums', 'loved_artists'
     ]
 
