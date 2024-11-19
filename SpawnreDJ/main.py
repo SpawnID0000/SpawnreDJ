@@ -21,12 +21,15 @@ logging.basicConfig(
     ]
 )
 
-# Now import other modules AFTER configuring logging
+# **Define logger here**
+logger = logging.getLogger(__name__)
+
+# Now import other modules after configuring logging
 from SpawnreDJ.M3U_from_folder import generate_m3u
-from SpawnreDJ.folder_from_M3U import copy_tracks_with_sequence
+from SpawnreDJ.folder_from_M3U import copy_tracks_with_sequence, copy_all_tracks_with_sequence, copy_all_tracks_without_sequence, sanitize_path, validate_path
 from SpawnreDJ.anal_M3U import analyze_m3u
 from SpawnreDJ.M3U_from_CSV import generate_curated_m3u
-
+from SpawnreDJ.organ_music import organize_music
 
 def load_api_credentials(env_path='APIds.env'):
     """
@@ -51,7 +54,6 @@ def load_api_credentials(env_path='APIds.env'):
         'spotify_client_secret': spotify_client_secret
     }
 
-
 def save_api_credentials(env_path='APIds.env', credentials=None):
     """
     Save API credentials to the specified .env file.
@@ -63,7 +65,6 @@ def save_api_credentials(env_path='APIds.env', credentials=None):
         env_file.write(f"SPOTIFY_CLIENT_ID={credentials.get('spotify_client_id', '')}\n")
         env_file.write(f"SPOTIFY_CLIENT_SECRET={credentials.get('spotify_client_secret', '')}\n")
     print(f"API credentials saved to {env_path}.")
-
 
 def prompt_for_credentials(credentials):
     """
@@ -77,7 +78,6 @@ def prompt_for_credentials(credentials):
     if not credentials.get('spotify_client_secret'):
         credentials['spotify_client_secret'] = getpass.getpass("Enter your Spotify Client Secret: ").strip()
 
-
 def run_m3u_from_folder(music_dir_str, flip, path_prefix, m3u_file_path_str):
     music_dir = Path(music_dir_str)
     m3u_file_path = Path(m3u_file_path_str)
@@ -87,31 +87,195 @@ def run_m3u_from_folder(music_dir_str, flip, path_prefix, m3u_file_path_str):
     else:
         print("Failed to generate playlist.")
 
-
-def run_folder_from_m3u(m3u_file, music_dir, output_folder, max_size_gb=None):
+def run_folder_from_m3u():
     """
-    Wrapper function to copy tracks from an M3U playlist to a new folder.
+    Handle Option 4: Organize files & folders for your music collection.
     """
-    if not os.path.isfile(m3u_file):
-        print(f"Error: The M3U file '{m3u_file}' does not exist.")
-        return
+    try:
+        # Prompt the user to decide whether to copy tracks instead of changing files & folders directly
+        copy_choice = input("\nWould you like to copy tracks instead of changing files & folders directly? (y/n) [y]: ").strip().lower()
+        if not copy_choice:
+            copy_choice = 'y'  # Default to 'y'
 
-    if not os.path.isdir(music_dir):
-        print(f"Error: The music directory '{music_dir}' does not exist or is not a directory.")
-        return
+        if copy_choice == 'y':
+            # Prompt if the user wants to use filename prefix from an M3U playlist order
+            prefix_choice = input("Would you like to use filename prefix from an M3U playlist order? (y/n) [n]: ").strip().lower()
+            if not prefix_choice:
+                prefix_choice = 'n'  # Default to 'n'
 
-    if not os.path.isdir(output_folder):
-        try:
-            os.makedirs(output_folder, exist_ok=True)
-            print(f"Created output folder: {output_folder}")
-        except Exception as e:
-            print(f"Error creating output folder '{output_folder}': {e}")
-            return
+            if prefix_choice == 'y':
+                # Prompt for M3U playlist path
+                m3u_file = input("Enter the path to the M3U playlist file: ").strip()
+                # Prompt for source music directory
+                music_dir = input("Enter the path to the source music directory: ").strip()
+                # Prompt for destination folder
+                output_folder = input("Enter the path to the destination folder: ").strip()
+                # Prompt for maximum cumulative size
+                max_size_input = input("Enter the maximum cumulative size in GB (or leave blank for no limit): ").strip()
 
-    success_count, failure_count = copy_tracks_with_sequence(m3u_file, music_dir, output_folder, max_size_gb)
-    print(f"Successfully copied {success_count} tracks.")
-    print(f"{failure_count} tracks failed to copy.")
+                # Sanitize and Resolve Paths
+                m3u_file_path = sanitize_path(m3u_file)
+                music_dir_path = sanitize_path(music_dir)
+                output_folder_path = sanitize_path(output_folder)
 
+                # Validate Paths
+                if not validate_path(m3u_file_path, "M3U playlist file"):
+                    print(f"Error: The M3U file '{m3u_file_path}' does not exist.")
+                    return
+
+                if not validate_path(music_dir_path, "music directory"):
+                    print(f"Error: The music directory '{music_dir_path}' does not exist or is not a directory.")
+                    return
+
+                if not output_folder_path.exists():
+                    try:
+                        output_folder_path.mkdir(parents=True, exist_ok=True)
+                        print(f"Created destination folder: {output_folder_path}")
+                    except Exception as e:
+                        print(f"Error creating destination folder '{output_folder_path}': {e}")
+                        return
+
+                # Parse Maximum Size Input
+                try:
+                    max_size_gb = float(max_size_input) if max_size_input else None
+                except ValueError:
+                    print("Invalid input for maximum size. Please enter a numerical value.")
+                    return
+
+                # Proceed with copying and organizing
+                success_count, failure_count = copy_tracks_with_sequence(
+                    m3u_file=str(m3u_file_path),
+                    music_dir=str(music_dir_path),
+                    output_folder=str(output_folder_path),
+                    max_size_gb=max_size_gb,
+                    base_path=str(music_dir_path)
+                )
+                print(f"Successfully copied {success_count} tracks.")
+                print(f"{failure_count} tracks failed to copy.")
+
+                # **Do NOT prompt for organizing since prefixing was applied**
+                print("\nSkipping music organization as prefixing from M3U was applied.")
+                logger.info("Skipping music organization as prefixing from M3U was applied.")
+
+            else:
+                # User chose not to use filename prefix from M3U; copy all tracks without M3U
+                # Prompt for source music directory
+                music_dir = input("Enter the path to the source music directory: ").strip()
+                # Prompt for destination folder
+                output_folder = input("Enter the path to the destination folder: ").strip()
+                # Prompt for maximum cumulative size
+                max_size_input = input("Enter the maximum cumulative size in GB (or leave blank for no limit): ").strip()
+
+                # Sanitize and Resolve Paths
+                music_dir_path = sanitize_path(music_dir)
+                output_folder_path = sanitize_path(output_folder)
+
+                # Validate Paths
+                if not validate_path(music_dir_path, "music directory"):
+                    print(f"Error: The music directory '{music_dir_path}' does not exist or is not a directory.")
+                    return
+
+                if not validate_path(output_folder_path, "output directory"):
+                    print(f"Error: The output directory '{output_folder_path}' does not exist.")
+                    return
+
+                # Create destination folder if it doesn't exist
+                if not output_folder_path.exists():
+                    try:
+                        output_folder_path.mkdir(parents=True, exist_ok=True)
+                        print(f"Created destination folder: {output_folder_path}")
+                    except Exception as e:
+                        print(f"Error creating destination folder '{output_folder_path}': {e}")
+                        return
+
+                # Parse Maximum Size Input
+                try:
+                    max_size_gb = float(max_size_input) if max_size_input else None
+                except ValueError:
+                    print("Invalid input for maximum size. Please enter a numerical value.")
+                    return
+
+                # Proceed with copying all tracks without using M3U
+                success_count, failure_count = copy_all_tracks_without_sequence(
+                    music_dir=str(music_dir_path),
+                    output_folder=str(output_folder_path),
+                    max_size_gb=max_size_gb,
+                    dry_run=False
+                )
+                print(f"Successfully copied {success_count} tracks.")
+                print(f"{failure_count} tracks failed to copy.")
+
+                # Ask if the user wants to organize the copied files
+                organize_choice = input("\nWould you like to organize the copied music files? (y/n) [n]: ").strip().lower()
+                if not organize_choice:
+                    organize_choice = 'n'  # Default to 'n'
+
+                if organize_choice == 'y':
+                    # Prompt for format strings
+                    print("\nEnter the format string for filenames (use placeholders like {title}, {D}, {TR}, etc.).")
+                    print("Default format: {title}")
+                    filename_format = input("Filename format: ").strip() or "{title}"
+
+                    print("\nEnter the format string for artist folders (use placeholders like {artist}, {MB_artistID}, etc.).")
+                    print("Leave blank to skip artist folder organization.")
+                    artist_folder_format = input("Artist folder format: ").strip() or None
+
+                    print("\nEnter the format string for album folders (use placeholders like {album}, {MB_albumID}, etc.).")
+                    print("Leave blank to skip album folder organization.")
+                    album_folder_format = input("Album folder format: ").strip() or None
+
+                    # Call the organize_music function from organ_music.py
+                    print("\nOrganizing music files...")
+                    organize_music(
+                        input_dir=os.path.join(output_folder_path, 'Music'),
+                        filename_format=filename_format,
+                        album_folder_format=album_folder_format,
+                        artist_folder_format=artist_folder_format
+                    )
+                    print("Music organization complete.")
+                else:
+                    print("Skipping music organization.")
+                    logger.info("Skipping music organization as per user choice.")
+        else:
+            # User chose not to copy tracks; proceed to organize existing files directly
+            print("\nProceeding to organize files & folders directly.")
+
+            # Prompt for music directory to organize
+            music_dir = input("Enter the path to the music directory to organize: ").strip()
+
+            # Sanitize and Resolve Paths
+            music_dir_path = sanitize_path(music_dir)
+
+            # Validate music directory
+            if not validate_path(music_dir_path, "music directory"):
+                print(f"Error: The music directory '{music_dir_path}' does not exist or is not a directory.")
+                return
+
+            # Prompt for format strings
+            print("\nEnter the format string for filenames (use placeholders like {title}, {D}, {TR}, etc.).")
+            print("Default format: {title}")
+            filename_format = input("Filename format: ").strip() or "{title}"
+
+            print("\nEnter the format string for artist folders (use placeholders like {artist}, {MB_artistID}, etc.).")
+            print("Leave blank to skip artist folder organization.")
+            artist_folder_format = input("Artist folder format: ").strip() or None
+
+            print("\nEnter the format string for album folders (use placeholders like {album}, {MB_albumID}, etc.).")
+            print("Leave blank to skip album folder organization.")
+            album_folder_format = input("Album folder format: ").strip() or None
+
+            # Call the organize_music function from organ_music.py
+            print("\nOrganizing music files...")
+            organize_music(
+                input_dir=str(music_dir_path),
+                filename_format=filename_format,
+                album_folder_format=album_folder_format,
+                artist_folder_format=artist_folder_format
+            )
+            print("Music organization complete.")
+    except Exception as e:
+        logger.error(f"An unexpected error occurred in run_folder_from_m3u: {e}")
+        print(f"An unexpected error occurred: {e}")
 
 def run_analyze_m3u(credentials, args):
     """
@@ -133,7 +297,6 @@ def run_analyze_m3u(credentials, args):
         loved_artists=args.loved_artists
     )
 
-
 def run_spawnre_csv(csv_file, shuffle=False, loved=None):
     csv_dir = os.path.dirname(os.path.abspath(csv_file))
     
@@ -145,133 +308,96 @@ def run_spawnre_csv(csv_file, shuffle=False, loved=None):
     
     generate_curated_m3u(args)
 
-
 def main():
-    # Load API credentials
-    credentials = load_api_credentials()
+    try:
+        # Load API credentials
+        credentials = load_api_credentials()
 
-    # Check for missing credentials
-    missing_credentials = [key for key, value in credentials.items() if not value]
-    if missing_credentials:
-        print("Some API credentials are missing. Please enter the required values.")
-        prompt_for_credentials(credentials)
-        save_api_credentials(credentials=credentials)
-    else:
-        print("API credentials loaded from APIds.env.")
-
-    print("\nWelcome to SpawnreDJ!")
-    print("\nOptions:")
-    print("1. Generate an M3U playlist from a folder")
-    print("2. Analyze an M3U playlist and save musical characteristics in a CSV file")
-    print("3. Generate a curated M3U playlist from a pre-generated analysis CSV file")
-    print("4. Copy files from an M3U playlist to a new folder, using filename prefix to order tracks")
-
-    choice = input("\nEnter your choice (or leave blank to exit): ").strip()
-
-    if not choice:
-        print("Exiting SpawnreDJ.")
-        return
-
-    if choice == "1":
-        music_dir = input("Enter the path to the music directory: ").strip()
-        flip_input = input("Enter 'y' to flip or leave blank for default (Track - Artist): ").strip().lower()
-        flip = flip_input == 'y'
-        path_prefix_input = input("Enter the path prefix to add or leave blank for default ('../'): ").strip() or '../'
-        m3u_file_path = input("Enter the path for the output M3U playlist or leave blank for default (same location as music directory): ").strip()
-        
-        if not m3u_file_path:
-            m3u_file_path = Path(music_dir).parent / "playlist.m3u"
-            print(f"No output path provided. Using default path: {m3u_file_path}")
+        # Check for missing credentials
+        missing_credentials = [key for key, value in credentials.items() if not value]
+        if missing_credentials:
+            print("Some API credentials are missing. Please enter the required values.")
+            prompt_for_credentials(credentials)
+            save_api_credentials(credentials=credentials)
         else:
-            m3u_path = Path(m3u_file_path)
-            if m3u_path.is_dir() or m3u_path.suffix.lower() != '.m3u':
-                print("Error: Please provide a full file path including the filename with a '.m3u' extension.")
-                return
+            print("API credentials loaded from APIds.env.")
 
-        run_m3u_from_folder(music_dir, flip, path_prefix=path_prefix_input, m3u_file_path_str=m3u_file_path)
-    elif choice == "2":
-        m3u_file = input("Enter the path to the M3U playlist file: ").strip()
-        music_directory = input("Enter the root directory of the music files: ").strip()
-        generate_stats = input("Generate stats CSV? (y/n): ").strip().lower() == 'y'
-        fetch_features = input("Fetch Spotify audio features data? (y/n): ").strip().lower() == 'y'
-        #fetch_analysis = input("Fetch Spotify audio analysis data? (y/n): ").strip().lower() == 'y'
-        post = input("Skip genre extraction and use an existing CSV file? (y/n): ").strip().lower() == 'y'
-        
-        csv_file = None
-        if post:
-            csv_file = input("Enter the path to the existing CSV file: ").strip()
-            if not os.path.isfile(csv_file):
-                print(f"Error: The CSV file '{csv_file}' does not exist.")
-                return
-        
-        loved_tracks = input("Enter the path to the loved tracks M3U file (or leave blank to skip): ").strip() or None
-        loved_albums = input("Enter the path to the loved albums M3U file (or leave blank to skip): ").strip() or None
-        loved_artists = input("Enter the path to the loved artists M3U file (or leave blank to skip): ").strip() or None
-        
-        # Create a SimpleNamespace object to hold the arguments
-        args = SimpleNamespace(
-            m3u_file=m3u_file,
-            music_directory=music_directory,
-            stats=generate_stats,
-            features=fetch_features,
-            #analysis=fetch_analysis,
-            post=post,
-            csv_file=csv_file,  # Add the CSV file path here
-            loved_tracks=loved_tracks,
-            loved_albums=loved_albums,
-            loved_artists=loved_artists
-        )
-        run_analyze_m3u(credentials, args)
-    elif choice == "3":
-        csv_file = input("Enter the path to the CSV file (required): ").strip()
-        shuffle = input("Curate the tracks within each cluster? (y/n): ").strip().lower() == 'y'
-        loved_input = input("Filter by loved tracks, albums, or artists (e.g., 'tracks albums') or leave blank: ").strip()
-        loved = loved_input.split() if loved_input else None
-        run_spawnre_csv(csv_file=csv_file, shuffle=shuffle, loved=loved)
-    elif choice == "4":
-        m3u_file = input("Enter the path to the M3U playlist file: ").strip()
-        music_dir = input("Enter the path to the source music directory: ").strip()
-        output_folder = input("Enter the path to the destination folder: ").strip()
-        max_size_input = input("Enter the maximum cumulative size in GB (or leave blank for no limit): ").strip()
-        
-        # Normalize and Resolve Paths
-        m3u_file_path = Path(m3u_file).expanduser().resolve()
-        music_dir_path = Path(music_dir).expanduser().resolve()
-        output_folder_path = Path(output_folder).expanduser().resolve()
-        
-        # Validate Paths
-        if not m3u_file_path.is_file():
-            print(f"Error: The M3U file '{m3u_file_path}' does not exist.")
+        print("\nWelcome to SpawnreDJ!")
+        print("\nOptions:")
+        print("1. Generate an M3U playlist from a folder")
+        print("2. Analyze an M3U playlist and save musical characteristics in a CSV file")
+        print("3. Generate a curated M3U playlist from a pre-generated analysis CSV file")
+        print("4. Organize files & folders for your music collection")
+
+        choice = input("\nEnter your choice (or leave blank to exit): ").strip()
+
+        if not choice:
+            print("Exiting SpawnreDJ.")
             return
 
-        if not music_dir_path.is_dir():
-            print(f"Error: The music directory '{music_dir_path}' does not exist or is not a directory.")
-            return
+        if choice == "1":
+            music_dir = input("Enter the path to the music directory: ").strip()
+            flip_input = input("Enter 'y' to flip or leave blank for default (Track - Artist): ").strip().lower()
+            flip = flip_input == 'y'
+            path_prefix_input = input("Enter the path prefix to add or leave blank for default ('../'): ").strip() or '../'
+            m3u_file_path = input("Enter the path for the output M3U playlist or leave blank for default (same location as music directory): ").strip()
+            
+            if not m3u_file_path:
+                m3u_file_path = Path(music_dir).parent / "playlist.m3u"
+                print(f"No output path provided. Using default path: {m3u_file_path}")
+            else:
+                m3u_path = Path(m3u_file_path)
+                if m3u_path.is_dir() or m3u_path.suffix.lower() != '.m3u':
+                    print("Error: Please provide a full file path including the filename with a '.m3u' extension.")
+                    return
 
-        if not output_folder_path.exists():
-            try:
-                output_folder_path.mkdir(parents=True, exist_ok=True)
-                print(f"Created destination folder: {output_folder_path}")
-            except Exception as e:
-                print(f"Error creating destination folder '{output_folder_path}': {e}")
-                return
-
-        # Parse Maximum Size Input
-        try:
-            max_size_gb = float(max_size_input) if max_size_input else None
-        except ValueError:
-            print("Invalid input for maximum size. Please enter a numerical value.")
-            return
-
-        run_folder_from_m3u(
-            m3u_file=str(m3u_file_path),
-            music_dir=str(music_dir_path),
-            output_folder=str(output_folder_path),
-            max_size_gb=max_size_gb
-        )
-    else:
-        print("Invalid choice. Please select a valid option.")
-
+            run_m3u_from_folder(music_dir, flip, path_prefix=path_prefix_input, m3u_file_path_str=m3u_file_path)
+        elif choice == "2":
+            m3u_file = input("Enter the path to the M3U playlist file: ").strip()
+            music_directory = input("Enter the root directory of the music files: ").strip()
+            generate_stats = input("Generate stats CSV? (y/n) [n]: ").strip().lower() == 'y'
+            fetch_features = input("Fetch Spotify audio features data? (y/n) [n]: ").strip().lower() == 'y'
+            #fetch_analysis = input("Fetch Spotify audio analysis data? (y/n): ").strip().lower() == 'y'
+            post = input("Skip genre extraction and use an existing CSV file? (y/n) [n]: ").strip().lower() == 'y'
+            
+            csv_file = None
+            if post:
+                csv_file = input("Enter the path to the existing CSV file: ").strip()
+                if not os.path.isfile(csv_file):
+                    print(f"Error: The CSV file '{csv_file}' does not exist.")
+                    return
+            
+            loved_tracks = input("Enter the path to the loved tracks M3U file (or leave blank to skip): ").strip() or None
+            loved_albums = input("Enter the path to the loved albums M3U file (or leave blank to skip): ").strip() or None
+            loved_artists = input("Enter the path to the loved artists M3U file (or leave blank to skip): ").strip() or None
+            
+            # Create a SimpleNamespace object to hold the arguments
+            args = SimpleNamespace(
+                m3u_file=m3u_file,
+                music_directory=music_directory,
+                stats=generate_stats,
+                features=fetch_features,
+                #analysis=fetch_analysis,
+                post=post,
+                csv_file=csv_file,  # Add the CSV file path here
+                loved_tracks=loved_tracks,
+                loved_albums=loved_albums,
+                loved_artists=loved_artists
+            )
+            run_analyze_m3u(credentials, args)
+        elif choice == "3":
+            csv_file = input("Enter the path to the CSV file: ").strip()
+            shuffle = input("Curate the tracks within each cluster? (y/n) [n]: ").strip().lower() == 'y'
+            loved_input = input("Filter by loved tracks, albums, or artists (e.g., 'tracks albums') or leave blank: ").strip()
+            loved = loved_input.split() if loved_input else None
+            run_spawnre_csv(csv_file=csv_file, shuffle=shuffle, loved=loved)
+        elif choice == "4":
+            run_folder_from_m3u()
+        else:
+            print("Invalid choice. Please select a valid option.")
+    except Exception as e:
+        logger.error(f"An unexpected error occurred in main: {e}")
+        print(f"An unexpected error occurred: {e}")
 
 if __name__ == "__main__":
     main()
