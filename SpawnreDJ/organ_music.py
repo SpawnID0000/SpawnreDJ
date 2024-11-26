@@ -188,9 +188,13 @@ def organize_music(
             # Determine the final new file path
             target_directory = album_dir
             final_new_filename = new_filename_with_ext
+            target_path = os.path.join(target_directory, final_new_filename)
 
             # Check for filename collisions and generate a unique filename if necessary
-            if os.path.exists(os.path.join(target_directory, final_new_filename)):
+            if os.path.abspath(file_path) == os.path.abspath(target_path):
+                logger.info(f"File already in the correct location and name: {file_path}")
+                continue  # Skip processing this file
+            elif os.path.exists(target_path):
                 final_new_filename = get_unique_filename(target_directory, new_filename, ext)
                 logger.info(f"Filename collision detected. Renaming to {final_new_filename}")
 
