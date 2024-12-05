@@ -358,7 +358,7 @@ def main():
             generate_stats = input("Generate stats CSV? (y/n) [n]: ").strip().lower() == 'y'
             fetch_features = input("Fetch Spotify audio features data? (y/n) [n]: ").strip().lower() == 'y'
             #fetch_analysis = input("Fetch Spotify audio analysis data? (y/n): ").strip().lower() == 'y'
-            post = input("Skip genre extraction and use an existing CSV file? (y/n) [n]: ").strip().lower() == 'y'
+            post = input("Use an existing CSV file? (y/n) [n]: ").strip().lower() == 'y'
             
             csv_file = None
             if post:
