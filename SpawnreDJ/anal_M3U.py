@@ -969,6 +969,18 @@ def analyze_m3u(
 
                 logger.debug(f"Appended track data: {track_dict}")
 
+                # After track_dict is fully constructed, but before appending to data:
+                normalized_file_path = Path(track_dict['file_path']).as_posix().lower()
+
+                # Derive album & artist directories in lowercase
+                album_dir = Path(normalized_file_path).parent.as_posix().lower()
+                artist_dir = Path(album_dir).parent.as_posix().lower()
+
+                # Check membership in loved sets
+                track_dict['loved_tracks'] = 'yes' if normalized_file_path in loved_tracks_set else 'no'
+                track_dict['loved_albums'] = 'yes' if album_dir in loved_albums_set else 'no'
+                track_dict['loved_artists'] = 'yes' if artist_dir in loved_artists_set else 'no'
+
                 data.append(track_dict)
 
         # Update stats
