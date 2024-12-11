@@ -13,7 +13,7 @@ from pathlib import Path
 
 # Configure logging
 logging.basicConfig(
-    level=logging.INFO,  # Set to INFO to suppress DEBUG messages
+    level=logging.DEBUG,  # Set to INFO to suppress DEBUG messages
     format="%(asctime)s - %(levelname)s - %(message)s",
     handlers=[
         logging.StreamHandler()  # Output logs to console
@@ -21,7 +21,7 @@ logging.basicConfig(
     ]
 )
 
-# **Define logger here**
+# Define logger here
 logger = logging.getLogger(__name__)
 
 # Now import other modules after configuring logging
@@ -153,7 +153,7 @@ def run_folder_from_m3u():
                 print(f"Successfully copied {success_count} tracks.")
                 print(f"{failure_count} tracks failed to copy.")
 
-                # **Do NOT prompt for organizing since prefixing was applied**
+                # Do NOT prompt for organizing since prefixing was applied
                 print("\nSkipping music organization as prefixing from M3U was applied.")
                 logger.info("Skipping music organization as prefixing from M3U was applied.")
 
@@ -288,8 +288,8 @@ def run_analyze_m3u(credentials, args):
         spotify_client_id=credentials['spotify_client_id'],
         spotify_client_secret=credentials['spotify_client_secret'],
         generate_stats=args.stats,
-        fetch_features=args.features,
-        #fetch_analysis=args.analysis,
+        fetch_features=args.fetch_features,  # Updated to args.fetch_features
+        audio_features_source=args.audio_features_source,
         post=args.post,
         csv_file=args.csv_file,
         loved_tracks=args.loved_tracks,
@@ -355,10 +355,30 @@ def main():
         elif choice == "2":
             m3u_file = input("Enter the path to the M3U playlist file: ").strip()
             music_directory = input("Enter the root directory of the music files: ").strip()
-            generate_stats = input("Generate stats CSV? (y/n) [n]: ").strip().lower() == 'y'
-            fetch_features = input("Fetch Spotify audio features data? (y/n) [n]: ").strip().lower() == 'y'
-            #fetch_analysis = input("Fetch Spotify audio analysis data? (y/n): ").strip().lower() == 'y'
-            post = input("Use an existing CSV file? (y/n) [n]: ").strip().lower() == 'y'
+            generate_stats = input("\nGenerate stats CSV? (y/n) [n]: ").strip().lower() == 'y'
+
+            # Updated prompt for audio features
+            print("\nHow would you like to extract audio features?")
+            print("1. Extract from embedded tags (local metadata).")
+            print("2. Fetch from Spotify API.")
+            print("3. Skip audio features.")
+            audio_features_choice = input("Enter your choice (1, 2, or 3) [1]: ").strip()
+
+            # Assign default value if input is empty
+            if not audio_features_choice:
+                audio_features_choice = "1"
+
+            if audio_features_choice == "1":
+                audio_features_source = "embedded"
+            elif audio_features_choice == "2":
+                audio_features_source = "spotify"
+            elif audio_features_choice == "3":
+                audio_features_source = "none"
+            else:
+                print("Invalid choice. Defaulting to skipping audio features.")
+                audio_features_source = "none"
+
+            post = input("\nUse an existing CSV file? (y/n) [n]: ").strip().lower() == 'y'
             
             csv_file = None
             if post:
@@ -366,20 +386,23 @@ def main():
                 if not os.path.isfile(csv_file):
                     print(f"Error: The CSV file '{csv_file}' does not exist.")
                     return
-            
-            loved_tracks = input("Enter the path to the loved tracks M3U file (or leave blank to skip): ").strip() or None
+
+            loved_tracks = input("\nEnter the path to the loved tracks M3U file (or leave blank to skip): ").strip() or None
             loved_albums = input("Enter the path to the loved albums M3U file (or leave blank to skip): ").strip() or None
             loved_artists = input("Enter the path to the loved artists M3U file (or leave blank to skip): ").strip() or None
-            
+
+            # Updated 'features' mapping
+            features = audio_features_source in ["spotify", "embedded"]
+
             # Create a SimpleNamespace object to hold the arguments
             args = SimpleNamespace(
                 m3u_file=m3u_file,
                 music_directory=music_directory,
                 stats=generate_stats,
-                features=fetch_features,
-                #analysis=fetch_analysis,
+                fetch_features=features,  # Renamed for clarity
+                audio_features_source=audio_features_source,  # Pass the source choice
                 post=post,
-                csv_file=csv_file,  # Add the CSV file path here
+                csv_file=csv_file,
                 loved_tracks=loved_tracks,
                 loved_albums=loved_albums,
                 loved_artists=loved_artists
