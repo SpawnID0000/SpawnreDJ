@@ -7,7 +7,9 @@ import time
 import random
 from typing import List, Tuple, Dict, Any, Optional
 
-from mutagen.mp4 import MP4
+import mutagen
+from mutagen.mp4 import MP4, MP4FreeForm
+from mutagen.easyid3 import EasyID3
 import spotipy
 from spotipy.oauth2 import SpotifyClientCredentials
 import musicbrainzngs
@@ -67,6 +69,70 @@ def sanitize_path(path: str) -> Path:
     return sanitized_path
 
 
+def extract_audio_features(file_path: str) -> Dict[str, Any]:
+    """
+    Extracts audio features from embedded MP4/M4A tags.
+    
+    Args:
+        file_path (str): Path to the MP4/M4A file.
+    
+    Returns:
+        Dict[str, Any]: Dictionary containing audio feature values.
+    """
+    features = {
+        'danceability': '',
+        'energy': '',
+        'key': '',
+        'loudness': '',
+        'mode': '',
+        'speechiness': '',
+        'acousticness': '',
+        'instrumentalness': '',
+        'liveness': '',
+        'valence': '',
+        'tempo': '',
+        'time_signature': ''
+    }
+
+    try:
+        audio = MP4(file_path)
+        feature_keys = [
+            'danceability', 'energy', 'key', 'loudness',
+            'mode', 'speechiness', 'acousticness', 'instrumentalness',
+            'liveness', 'valence', 'tempo', 'time_signature'
+        ]
+
+        for feature in feature_keys:
+            tag_key = f'----:com.apple.iTunes:feature_{feature}'
+            if tag_key in audio.tags:
+                tag = audio.tags[tag_key][0]
+                if isinstance(tag, MP4FreeForm):
+                    # Correctly access the raw bytes using bytes(tag)
+                    try:
+                        tag_value_bytes = bytes(tag)
+                        tag_value_str = tag_value_bytes.decode('utf-8').strip()
+                        # Convert to float or int based on feature
+                        if feature in ['key', 'mode', 'time_signature']:
+                            features[feature] = int(tag_value_str)
+                        else:
+                            features[feature] = float(tag_value_str)
+                        logger.debug(f"Extracted {feature} for {file_path}: {features[feature]}")
+                    except Exception as e:
+                        logger.error(f"Error decoding and converting feature '{feature}' for {file_path}: {e}")
+                        features[feature] = ''
+                else:
+                    logger.warning(f"Unexpected tag type for '{feature}' in {file_path}: {type(tag)}")
+                    features[feature] = ''
+            else:
+                logger.debug(f"Feature '{feature}' not found in {file_path}.")
+                features[feature] = ''
+
+    except Exception as e:
+        logger.error(f"Error reading MP4 tags from {file_path}: {e}")
+
+    return features
+
+
 def fetch_genre_lastfm(artist: str, track: str, api_key: str, retries: int = 3, delay: int = 5, timeout: int = 10) -> List[str]:
     if not api_key:
         logger.warning("Last.fm API key not provided.")
@@ -98,9 +164,9 @@ def fetch_genre_lastfm(artist: str, track: str, api_key: str, retries: int = 3, 
 
 
 def get_spotify_genres(artist_name: str, sp: spotipy.Spotify, retries: int = 3, delay: int = 5) -> List[str]:
-    if artist_name in spotify_genre_cache:
-        logger.debug(f"Spotify genres for '{artist_name}' fetched from cache.")
-        return spotify_genre_cache[artist_name]
+
+    if not sp:
+        return []
 
     for attempt in range(1, retries + 1):
         try:
@@ -211,7 +277,7 @@ def combine_and_prioritize_genres_refined(
     combined_genres = multi_source_genres[:5]
     single_source_filtered = [
         genre for genre in single_source_genres
-        if genre.lower() != artist_name.lower() and any(value['Genre'].lower() == genre.lower() for value in genre_mapping.values())
+        if any(value['Genre'].lower() == genre.lower() for value in genre_mapping.values())
     ]
     combined_genres += single_source_filtered[:5 - len(combined_genres)]
 
@@ -422,6 +488,156 @@ def determine_format_using_metadata(track_name: str, artist_name: str, file_path
         return 'Unknown'
 
 
+def extract_embedded_spotify_ids(file_path: str) -> Dict[str, str]:
+    spotify_ids = {'spotify_artist_ID': '', 'spotify_track_ID': ''}
+    try:
+        audio = MP4(file_path)
+        artist_id_tag = '----:com.spotify:artist_id'
+        track_id_tag = '----:com.spotify:track_id'
+        if artist_id_tag in audio.tags:
+            spotify_ids['spotify_artist_ID'] = audio.tags[artist_id_tag][0].decode('utf-8')
+        if track_id_tag in audio.tags:
+            spotify_ids['spotify_track_ID'] = audio.tags[track_id_tag][0].decode('utf-8')
+    except Exception as e:
+        logger.error(f"Error extracting embedded Spotify IDs from {file_path}: {e}")
+    return spotify_ids
+
+
+def fetch_spotify_data_by_id(artist_id: str, track_id: str, sp: spotipy.Spotify) -> Dict[str, Any]:
+    """
+    Fetch Spotify track and artist details directly by their IDs.
+    """
+    spotify_data = {'spotify_artist_ID': artist_id, 'spotify_track_ID': track_id, 'spotify_duration_ms': '', 'spotify_genres': []}
+    try:
+        if track_id:
+            spotify_track = sp.track(track_id)
+            spotify_data['spotify_duration_ms'] = spotify_track.get('duration_ms', '')
+
+        if artist_id:
+            artist_info = sp.artist(artist_id)
+            spotify_data['spotify_genres'] = artist_info.get('genres', [])[:5]
+
+    except Exception as e:
+        logger.error(f"Error fetching Spotify data by ID: artist_id={artist_id}, track_id={track_id}, error={e}")
+
+    return spotify_data
+
+
+def fetch_spotify_data(track: Dict[str, Any], sp: spotipy.Spotify) -> Dict[str, Any]:
+    """
+    Search Spotify by artist and track name if IDs are not available.
+    """
+    spotify_data = {'spotify_artist_ID': '', 'spotify_track_ID': '', 'spotify_duration_ms': '', 'spotify_genres': []}
+    try:
+        query = f"artist:{track['artist']} track:{track['track']}"
+        logger.debug(f"Searching Spotify for '{track['artist']} - {track['track']}'")
+        results = sp.search(q=query, type='track', limit=1)
+        if results['tracks']['items']:
+            spotify_track = results['tracks']['items'][0]
+            spotify_data['spotify_artist_ID'] = spotify_track['artists'][0]['id']
+            spotify_data['spotify_track_ID'] = spotify_track['id']
+            spotify_data['spotify_duration_ms'] = spotify_track['duration_ms']
+            artist_info = sp.artist(spotify_data['spotify_artist_ID'])
+            spotify_data['spotify_genres'] = artist_info.get('genres', [])[:5]
+    except Exception as e:
+        logger.error(f"Error fetching Spotify data for {track['artist']} - {track['track']}: {e}")
+
+    return spotify_data
+
+
+def assign_spotify_genres(track: Dict[str, Any], spotify_data: Dict[str, Any]) -> None:
+    for i in range(1, 6):
+        genre_key = f'spotify_genre_{i}'
+        track[genre_key] = spotify_data['spotify_genres'][i - 1] if i - 1 < len(spotify_data['spotify_genres']) else ''
+
+
+def update_spotify_durations(data: List[Dict[str, Any]], sp: spotipy.Spotify) -> None:
+    """
+    Updates the 'spotify_duration_ms' field for tracks that have a 'spotify_track_ID' but lack 'spotify_duration_ms'.
+    
+    Args:
+        data (List[Dict[str, Any]]): List of track dictionaries.
+        sp (spotipy.Spotify): Authenticated Spotify client.
+    """
+    if not sp:
+        logger.warning("Spotify client not initialized. Cannot update durations.")
+        return
+
+    tracks_to_update = [track for track in data if track.get('spotify_track_ID') and not track.get('spotify_duration_ms')]
+    logger.info(f"Found {len(tracks_to_update)} tracks to update 'spotify_duration_ms'.")
+
+    for index, track in enumerate(tracks_to_update, start=1):
+        track_id = track['spotify_track_ID']
+        try:
+            logger.debug(f"Fetching duration for Spotify Track ID: {track_id} (Track {index}/{len(tracks_to_update)})")
+            spotify_track = sp.track(track_id)
+            duration_ms = spotify_track.get('duration_ms', '')
+            if duration_ms:
+                track['spotify_duration_ms'] = duration_ms
+                logger.info(f"Updated 'spotify_duration_ms' for '{track['artist']} - {track['track']}': {duration_ms} ms")
+            else:
+                logger.warning(f"No 'duration_ms' found for Spotify Track ID: {track_id}")
+        except spotipy.exceptions.SpotifyException as e:
+            logger.error(f"Spotify API error while fetching duration for Track ID {track_id}: {e}")
+        except Exception as e:
+            logger.error(f"Unexpected error while fetching duration for Track ID {track_id}: {e}")
+
+        # Respectful delay to avoid hitting rate limits
+        time.sleep(random.uniform(0.2, 0.5))
+
+
+def write_track_to_csv(track: Dict[str, Any], csv_writer: csv.DictWriter) -> None:
+    fieldnames = csv_writer.fieldnames
+    for field in fieldnames:
+        if field not in track:
+            track[field] = ''
+    csv_writer.writerow(track)
+
+
+def compute_stats_and_genres(data: List[Dict[str, Any]], genre_mapping: Dict[str, Dict[str, Any]]) -> (Dict[str, Any], List[tuple]):
+    """
+    Compute stats and genres solely from the final 'spawnre' field in each track.
+    """
+    # Basic stats
+    total_tracks = len(data)
+    tracks_with_genres = sum(1 for track in data if track.get('spawnre'))
+
+    # Build a genre_to_hex map
+    genre_to_hex = {
+        details['Genre'].lower(): details['Hex'].replace('0x', '')
+        for details in genre_mapping.values()
+        if details['Genre']
+    }
+
+    # Count genres from the final 'spawnre' field
+    genre_counts = defaultdict(int)
+    for track in data:
+        spawnre_field = track.get('spawnre', '')
+        if spawnre_field:
+            # spawnre is a comma-separated string of final genres
+            genres = [g.strip().lower() for g in spawnre_field.split(',') if g.strip()]
+            for g in genres:
+                genre_counts[g] += 1
+
+    # Sort genres by occurrence
+    sorted_genres = sorted(
+        [
+            (genre, genre_to_hex.get(genre.lower(), 'Unknown'), count)
+            for genre, count in genre_counts.items()
+            if count > 0
+        ],
+        key=lambda x: x[2],
+        reverse=True
+    )
+
+    stats = {
+        'Total Tracks': total_tracks,
+        'Tracks with Genres': tracks_with_genres
+    }
+
+    return stats, sorted_genres
+
+
 def analyze_m3u(
     m3u_file: str,
     music_directory: str,
@@ -430,12 +646,16 @@ def analyze_m3u(
     spotify_client_secret: str,
     generate_stats: bool,
     fetch_features: bool,
+    audio_features_source: str,
     post: bool = False,
     csv_file: Optional[str] = None,
     loved_tracks: Optional[str] = None,
     loved_albums: Optional[str] = None,
     loved_artists: Optional[str] = None
 ) -> List[Dict[str, Any]]:
+    """
+    Analyzes an M3U playlist and saves musical characteristics in a CSV file.
+    """
     # Sanitize input paths
     m3u_path = sanitize_path(m3u_file)
     music_dir_path = sanitize_path(music_directory)
@@ -466,43 +686,48 @@ def analyze_m3u(
         logger.debug(f"Loaded {len(loved_artists_set)} loved artists.")
 
     data: List[Dict[str, Any]] = []
-    artist_spawnre_tags: Dict[str, str] = {}
-    genre_counts: Dict[str, int] = defaultdict(int)
     artist_genre_count: Dict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
-    stats = {'Total Tracks': 0, 'Tracks with Genres': 0}
+    artist_spawnre_tags: Dict[str, str] = {}
 
     # Build related_genre_map from genre_mapping
     related_genre_map: Dict[str, List[str]] = {}
     for code, details in genre_mapping.items():
         genre = details['Genre'].lower()
         related_codes = details.get('Related', [])
-        related_genres = [genre_mapping[rel_code]['Genre'].lower() for rel_code in related_codes if rel_code in genre_mapping and genre_mapping[rel_code]['Genre']]
+        related_genres = [
+            genre_mapping[rel_code]['Genre'].lower()
+            for rel_code in related_codes
+            if rel_code in genre_mapping and genre_mapping[rel_code]['Genre']
+        ]
         if related_genres:
             related_genre_map[genre] = related_genres
 
     logger.debug(f"Constructed related_genre_map: {related_genre_map}")
 
-    # Create a mapping from genre name to Hex value (ensure it's defined)
+    # Create a mapping from genre name to Hex value
     genre_to_hex = {
-        details['Genre'].lower(): details['Hex'].replace('0x', '')  # Remove '0x' prefix
+        details['Genre'].lower(): details['Hex'].replace('0x', '')
         for details in genre_mapping.values()
         if details['Genre']
     }
 
-    # Initialize Spotify client at the very beginning
-    try:
-        sp = spotipy.Spotify(
-            auth_manager=SpotifyClientCredentials(
-                client_id=spotify_client_id,
-                client_secret=spotify_client_secret
-            ),
-            requests_timeout=30
-        )
-        logger.info("Spotify client initialized successfully.")
-    except Exception as e:
-        logger.error(f"Failed to initialize Spotify client: {e}")
-        return []
+    # Always try to initialize Spotify client if credentials provided
+    sp = None
+    if spotify_client_id and spotify_client_secret:
+        try:
+            sp = spotipy.Spotify(
+                auth_manager=SpotifyClientCredentials(
+                    client_id=spotify_client_id,
+                    client_secret=spotify_client_secret
+                ),
+                requests_timeout=30
+            )
+            logger.info("Spotify client initialized successfully.")
+        except Exception as e:
+            logger.error(f"Failed to initialize Spotify client: {e}")
+            sp = None
 
+    # Handle post-processing scenario
     if post and csv_path:
         # Validate CSV path
         if not csv_path.is_file():
@@ -525,246 +750,23 @@ def analyze_m3u(
 
         # Process loved metadata
         for track_data in data:
-            # Normalize the file path for comparison
             file_path = Path(track_data.get('file_path', '')).as_posix().lower()
-            normalized_file_path = Path(file_path)
+            album_dir = Path(file_path).parent.as_posix().lower()
+            artist_dir = Path(file_path).parent.parent.as_posix().lower()
 
-            # Derive album and artist directories
-            album_dir = Path(file_path).parent
-            album_dir_normalized = album_dir.as_posix().lower()
+            if loved_tracks_set:
+                track_data['loved_tracks'] = 'yes' if file_path in loved_tracks_set else 'no'
+            if loved_albums_set:
+                track_data['loved_albums'] = 'yes' if album_dir in loved_albums_set else 'no'
+            if loved_artists_set:
+                track_data['loved_artists'] = 'yes' if artist_dir in loved_artists_set else 'no'
 
-            artist_dir = album_dir.parent
-            artist_dir_normalized = artist_dir.as_posix().lower()
-
-            # Check if the track, album, or artist is "loved"
-            is_loved_track = 'yes' if file_path in loved_tracks_set else 'no'
-            is_loved_album = 'yes' if album_dir_normalized in loved_albums_set else 'no'
-            is_loved_artist = 'yes' if artist_dir_normalized in loved_artists_set else 'no'
-
-            # Add the loved metadata
-            track_data['loved_tracks'] = is_loved_track
-            track_data['loved_albums'] = is_loved_album
-            track_data['loved_artists'] = is_loved_artist
-
-            logger.debug(f"Updated loved metadata for '{track_data['artist']} - {track_data['track']}': "
-                         f"loved_tracks={is_loved_track}, loved_albums={is_loved_album}, loved_artists={is_loved_artist}")
-
-        # Now, for tracks with missing fields, fetch data and assign values
-        for track_data in data:
-            artist = track_data.get('artist', '').strip()
-            track = track_data.get('track', '').strip()
-            if not artist or not track:
-                logger.warning(f"Missing artist or track name for row: {track_data}")
-                continue
-
-            # Process embedded genre and year if missing
-            if not track_data.get('embedded_genre') or not track_data.get('year') or not track_data.get('file_duration_ms'):
-                file_path = Path(track_data.get('file_path', '')).resolve()
-                if file_path.is_file():
-                    try:
-                        audio = MP4(str(file_path))
-                        if not track_data.get('embedded_genre'):
-                            embedded_genre_list = audio.tags.get('\xa9gen', [''])
-                            embedded_genre = embedded_genre_list[0].lower() if embedded_genre_list else ''
-                            track_data['embedded_genre'] = embedded_genre
-                        if not track_data.get('year'):
-                            year = audio.tags.get('\xa9day', ['Unknown'])[0]
-                            track_data['year'] = year
-                        if not track_data.get('file_duration_ms'):
-                            file_duration_ms = int(audio.info.length * 1000) if hasattr(audio, 'info') and audio.info.length else 0
-                            track_data['file_duration_ms'] = file_duration_ms
-                    except Exception as e:
-                        logger.error(f"Error reading metadata from {file_path}: {e}")
-                else:
-                    logger.warning(f"File does not exist: {file_path}")
-
-            # Fetch MusicBrainz IDs if missing
-            if not track_data.get('musicbrainz_artist_ID') or not track_data.get('musicbrainz_track_ID') or not track_data.get('musicbrainz_release_group_ID'):
-                file_path = Path(track_data.get('file_path', '')).resolve()
-                if file_path.is_file():
-                    try:
-                        audio = MP4(str(file_path))
-                        if not track_data.get('musicbrainz_artist_ID'):
-                            mb_artistid = (
-                                audio.tags.get('----:com.apple.iTunes:MusicBrainz Artist Id', [b''])[0].decode('utf-8')
-                                if '----:com.apple.iTunes:MusicBrainz Artist Id' in audio.tags else ''
-                            )
-                            track_data['musicbrainz_artist_ID'] = mb_artistid
-                        if not track_data.get('musicbrainz_release_group_ID'):
-                            mb_releasegroupid = (
-                                audio.tags.get('----:com.apple.iTunes:MusicBrainz Release Group Id', [b''])[0].decode('utf-8')
-                                if '----:com.apple.iTunes:MusicBrainz Release Group Id' in audio.tags else ''
-                            )
-                            track_data['musicbrainz_release_group_ID'] = mb_releasegroupid
-                        if not track_data.get('musicbrainz_track_ID'):
-                            mb_trackid = (
-                                audio.tags.get('----:com.apple.iTunes:MusicBrainz Track Id', [b''])[0].decode('utf-8')
-                                if '----:com.apple.iTunes:MusicBrainz Track Id' in audio.tags else ''
-                            )
-                            track_data['musicbrainz_track_ID'] = mb_trackid
-                    except Exception as e:
-                        logger.error(f"Error reading embedded MusicBrainz IDs from {file_path}: {e}")
-                else:
-                    logger.warning(f"File does not exist: {file_path}")
-
-                # After trying to read from embedded tags, if still missing, fetch from API
-                if not track_data.get('musicbrainz_artist_ID') or not track_data.get('musicbrainz_track_ID') or not track_data.get('musicbrainz_release_group_ID'):
-                    album = track_data.get('album', '').strip()
-                    musicbrainz_data = fetch_musicbrainz_ids_from_api(artist, track, album)
-                    track_data['musicbrainz_artist_ID'] = track_data.get('musicbrainz_artist_ID') or musicbrainz_data.get('artist_id', '')
-                    track_data['musicbrainz_release_group_ID'] = track_data.get('musicbrainz_release_group_ID') or musicbrainz_data.get('release_group_id', '')
-                    track_data['musicbrainz_track_ID'] = track_data.get('musicbrainz_track_ID') or musicbrainz_data.get('track_id', '')
-
-            # Fetch Spotify IDs and genres if missing
-            if not track_data.get('spotify_artist_ID') or not track_data.get('spotify_track_ID'):
-                # Fetch and populate Spotify IDs and genres
-                try:
-                    query = f"track:{track} artist:{artist}"
-                    logger.debug(f"Searching Spotify for '{artist} - {track}'")
-                    result = sp.search(q=query, type='track', limit=1)
-                    if result['tracks']['items']:
-                        track_item = result['tracks']['items'][0]
-                        spotify_track_id = track_item['id']
-                        spotify_artist_id = track_item['artists'][0]['id']
-                        spotify_duration_ms = track_item['duration_ms']
-                        spotify_genres = get_spotify_genres(artist, sp)
-
-                        track_data['spotify_track_ID'] = spotify_track_id
-                        track_data['spotify_artist_ID'] = spotify_artist_id
-                        track_data['spotify_duration_ms'] = spotify_duration_ms
-
-                        # Populate up to 5 genres
-                        for i in range(1, 6):
-                            genre_key = f'spotify_genre_{i}'
-                            track_data[genre_key] = spotify_genres[i-1] if i-1 < len(spotify_genres) else ''
-                        logger.info(f"Populated Spotify data for '{artist} - {track}': Track ID = {spotify_track_id}, Artist ID = {spotify_artist_id}, Duration = {spotify_duration_ms} ms")
-                    else:
-                        logger.warning(f"No Spotify Track found for '{artist} - {track}'.")
-                except Exception as e:
-                    logger.error(f"Error fetching Spotify data for '{artist} - {track}': {e}")
-
-            # Fetch Last.fm genres if missing
-            if not track_data.get('last_FM_genre_1'):
-                last_fm_genres = fetch_genre_lastfm(artist, track, lastfm_api_key)
-                for i in range(1, 6):
-                    genre_key = f'last_FM_genre_{i}'
-                    track_data[genre_key] = last_fm_genres[i-1] if i-1 < len(last_fm_genres) else ''
-
-            # Fetch MusicBrainz genres if missing
-            if not track_data.get('musicbrainz_genre_1'):
-                musicbrainz_genres = get_musicbrainz_genres(artist)
-                for i in range(1, 6):
-                    genre_key = f'musicbrainz_genre_{i}'
-                    track_data[genre_key] = musicbrainz_genres[i-1] if i-1 < len(musicbrainz_genres) else ''
-
-            # Fetch genres and assign 'spawnre' if missing
-            if not track_data.get('spawnre'):
-                embedded_genre = track_data.get('embedded_genre', '').lower()
-
-                # Fetch genres from various sources
-                last_fm_genres = [track_data.get(f'last_FM_genre_{i}', '') for i in range(1, 6) if track_data.get(f'last_FM_genre_{i}', '')]
-                spotify_genres = [track_data.get(f'spotify_genre_{i}', '') for i in range(1, 6) if track_data.get(f'spotify_genre_{i}', '')]
-                musicbrainz_genres = [track_data.get(f'musicbrainz_genre_{i}', '') for i in range(1, 6) if track_data.get(f'musicbrainz_genre_{i}', '')]
-
-                # Combine and prioritize genres
-                combined_genres = combine_and_prioritize_genres_refined(
-                    embedded_genre,
-                    last_fm_genres,
-                    spotify_genres,
-                    musicbrainz_genres,
-                    related_genre_map,
-                    genre_mapping,
-                    genre_synonyms,
-                    artist.lower(),
-                    artist_genre_count
-                )
-
-                # Find closest genre matches
-                closest_genres, spawnre_hex = find_closest_genre_matches(combined_genres, genre_mapping)
-
-                logger.info(f"Final matched genres for '{artist} - {track}': {closest_genres}")
-                logger.info(f"Spawnre Hex: {spawnre_hex}")
-
-                # Update track_data
-                track_data['spawnre'] = ', '.join(closest_genres)
-                track_data['spawnre_hex'] = spawnre_hex
-
-                # Update per-artist genre counts
-                for genre in closest_genres:
-                    genre_lower = genre.lower()
-                    genre_counts[genre_lower] += 1
-                    artist_lower = artist.lower()
-                    artist_genre_count[artist_lower][genre_lower] += 1
-                    logger.debug(f"Genre '{genre_lower}' count updated to {genre_counts[genre_lower]} for artist '{artist_lower}'")
-            else:
-                # Process existing 'spawnre' field
-                spawnre_str = track_data['spawnre']
-                if spawnre_str:
-                    # Split the comma-separated string into a list
-                    spawnre_list = [genre.strip() for genre in spawnre_str.split(',') if genre.strip()]
-                    if spawnre_list:
-                        stats['Tracks with Genres'] += 1
-                        for genre in spawnre_list:
-                            genre_lower = genre.lower()
-                            genre_counts[genre_lower] += 1
-                            artist_lower = artist.lower()
-                            artist_genre_count[artist_lower][genre_lower] += 1
-                            logger.debug(f"Genre '{genre_lower}' count updated to {genre_counts[genre_lower]} for artist '{artist_lower}'")
-                else:
-                    # Handle the case where 'spawnre_str' is empty
-                    pass
-
-        # Update stats
-        stats['Total Tracks'] = len(data)
-
-        # Assign spawnre_tag based on most frequent main genre per artist
-        for artist, genres in artist_genre_count.items():
-            if genres:
-                most_frequent_genre = max(genres, key=genres.get)
-                artist_spawnre_tags[artist] = most_frequent_genre
-                logger.debug(f"Assigned spawnre_tag for artist '{artist}': {most_frequent_genre}")
-            else:
-                artist_spawnre_tags[artist] = ''
-                logger.debug(f"No genres found for artist '{artist}'. spawnre_tag set to empty.")
-
-        # Assign spawnre_tag to all tracks by the artist
-        for track_data in data:
-            artist_lower = track_data['artist'].lower()
-            spawnre_tag = artist_spawnre_tags.get(artist_lower, '')
-            track_data['spawnre_tag'] = spawnre_tag
-            logger.debug(f"Assigned spawnre_tag for '{track_data['artist']} - {track_data['track']}': {spawnre_tag}")
-
-        # Aggregate genre_counts from artist_genre_count
-        genre_counts = defaultdict(int)
-        for artist, genres in artist_genre_count.items():
-            for genre, count in genres.items():
-                genre_counts[genre] += count
-                logger.debug(f"Aggregated genre '{genre}' count to {genre_counts[genre]}")
-
-        logger.info(f"Genre Counts: {dict(genre_counts)}")
-
-        # Sort genres by occurrence count, highest first
-        sorted_genres = sorted(
-            [
-                (
-                    genre,
-                    genre_to_hex.get(genre.lower(), 'Unknown'),
-                    count
-                )
-                for genre, count in genre_counts.items()
-                if count > 0
-            ],
-            key=lambda x: x[2],  # Sort by count (occurrences)
-            reverse=True
-        )
-
-        logger.info(f"Sorted Genres: {sorted_genres}")
-
-        # Determine the output CSV path (overwrite the existing CSV)
-        output_csv_path = csv_path
-
-        # Determine the stats CSV path
-        stats_csv_path = csv_path.with_stem(csv_path.stem + '_stats').with_suffix('.csv')
+            logger.debug(
+                f"Updated loved metadata for '{track_data['artist']} - {track_data['track']}': "
+                f"loved_tracks={track_data.get('loved_tracks', '')}, "
+                f"loved_albums={track_data.get('loved_albums', '')}, "
+                f"loved_artists={track_data.get('loved_artists', '')}"
+            )
 
     else:
         # Non-post-processing mode: parse M3U and process tracks
@@ -776,7 +778,6 @@ def analyze_m3u(
             logger.error(f"Error reading M3U file '{m3u_path}': {e}")
             return []
 
-        # Get total number of tracks in the M3U
         total_tracks = sum(1 for line in lines if line.strip() and not line.startswith('#'))
         logger.info(f"\nTotal number of tracks: {total_tracks}\n")
 
@@ -804,12 +805,10 @@ def analyze_m3u(
                 file_line = lines[i + 1].strip()
                 file_path = (music_dir_path / file_line).resolve()
 
-                # Check if file exists
                 if not file_path.is_file():
                     logger.warning(f"File path does not exist: {file_path}")
                     continue
 
-                # Determine the format using metadata
                 format_type = determine_format_using_metadata(track_info[1].strip(), track_info[0].strip(), file_path)
 
                 if format_type == 'Track - Artist':
@@ -819,31 +818,35 @@ def analyze_m3u(
                     artist = track_info[0].strip()
                     track = track_info[1].strip()
                 else:
-                    # Default to 'Artist - Track' if unknown
                     artist = track_info[0].strip()
                     track = track_info[1].strip()
 
-                # Initialize variables
+                # Initialize fields
                 spotify_artist_id = ''
                 spotify_track_id = ''
                 spotify_duration_ms = ''
                 file_duration_ms = ''
+                embedded_genre = ''
+                year = 'Unknown'
 
-                # Fetch embedded metadata
                 try:
                     audio = MP4(str(file_path))
                     album_tag = audio.tags.get('\xa9alb', ['Unknown Album'])[0]
 
-                    # Extract embedded genre
-                    embedded_genre_list = audio.tags.get('\xa9gen', [''])
+                    # Attempt to extract embedded genre from the iTunes-specific tag first
+                    embedded_genre_list = audio.tags.get('----:com.apple.iTunes:genre')
+
+                    # If the iTunes-specific tag isn't present, try the standard ©gen tag
+                    if not embedded_genre_list:
+                        embedded_genre_list = audio.tags.get('\xa9gen', [])
+
                     embedded_genre = embedded_genre_list[0].lower() if embedded_genre_list else ''
+
                     logger.info(f"Extracted embedded genre: {embedded_genre}")
 
-                    # Get file duration in ms
                     file_duration_ms = int(audio.info.length * 1000) if hasattr(audio, 'info') and audio.info.length else 0
                     logger.info(f"Extracted file duration (ms): {file_duration_ms}")
 
-                    # Extract MusicBrainz IDs
                     mb_artistid = (
                         audio.tags.get('----:com.apple.iTunes:MusicBrainz Artist Id', [b''])[0].decode('utf-8')
                         if '----:com.apple.iTunes:MusicBrainz Artist Id' in audio.tags else ''
@@ -864,7 +867,10 @@ def analyze_m3u(
                         mb_trackid = mb_trackid or musicbrainz_data.get('track_id', '')
 
                     year = audio.tags.get('\xa9day', ['Unknown'])[0]
-                    logger.info(f"Extracted MusicBrainz IDs for {file_path}: Artist ID = {mb_artistid}, Release Group ID = {mb_releasegroupid}, Track ID = {mb_trackid}")
+                    logger.info(
+                        f"Extracted MusicBrainz IDs for {file_path}: Artist ID = {mb_artistid}, "
+                        f"Release Group ID = {mb_releasegroupid}, Track ID = {mb_trackid}"
+                    )
 
                 except Exception as e:
                     logger.error(f"Error reading metadata from {file_path}: {e}")
@@ -875,12 +881,10 @@ def analyze_m3u(
                     mb_trackid = ''
                     year = 'Unknown'
 
-                # Fetch genres from various sources
                 last_fm_genres = fetch_genre_lastfm(artist, track, lastfm_api_key)
-                spotify_genres = get_spotify_genres(artist, sp)
+                spotify_genres = get_spotify_genres(artist, sp) if sp else []
                 musicbrainz_genres = get_musicbrainz_genres(artist)
 
-                # Combine and prioritize genres
                 combined_genres = combine_and_prioritize_genres_refined(
                     embedded_genre,
                     last_fm_genres,
@@ -893,44 +897,31 @@ def analyze_m3u(
                     artist_genre_count
                 )
 
-                # Find closest genre matches
                 closest_genres, spawnre_hex = find_closest_genre_matches(combined_genres, genre_mapping)
 
                 logger.info(f"Final matched genres: {combined_genres}")
                 logger.info(f"Spawnre Hex: {spawnre_hex}")
                 logger.debug("-----------------------")
 
-                # Update per-artist genre counts
-                for genre in closest_genres:
-                    genre_lower = genre.lower()
-                    genre_counts[genre_lower] += 1
-                    artist_lower = artist.lower()
-                    artist_genre_count[artist_lower][genre_lower] += 1
-                    logger.debug(f"Genre '{genre_lower}' count updated to {genre_counts[genre_lower]} for artist '{artist_lower}'")
+                spotify_genre_columns = {
+                    f'spotify_genre_{i+1}': spotify_genres[i] if i < len(spotify_genres) else ''
+                    for i in range(5)
+                }
+                last_fm_genre_columns = {
+                    f'last_FM_genre_{i+1}': last_fm_genres[i] if i < len(last_fm_genres) else ''
+                    for i in range(5)
+                }
+                musicbrainz_genre_columns = {
+                    f'musicbrainz_genre_{i+1}': musicbrainz_genres[i] if i < len(musicbrainz_genres) else ''
+                    for i in range(5)
+                }
 
-                # Fetch Spotify Track ID and Audio Features
-                try:
-                    logger.debug(f"Fetching Spotify Track ID for '{artist} - {track}'")
-                    result = sp.search(q=f'track:{track} artist:{artist}', type='track', limit=1)
-                    if result['tracks']['items']:
-                        track_item = result['tracks']['items'][0]
-                        spotify_track_id = track_item['id']
-                        spotify_artist_id = track_item['artists'][0]['id']
-                        spotify_duration_ms = track_item['duration_ms']
-                        logger.info(f"Spotify Artist ID for {artist}: {spotify_artist_id}")
-                        logger.info(f"Spotify Track ID for {track}: {spotify_track_id}")
-                        logger.info(f"Spotify Duration: {spotify_duration_ms} ms")
-                    else:
-                        logger.warning(f"No Spotify Track found for '{artist} - {track}'.")
-                except Exception as e:
-                    logger.error(f"Error fetching Spotify track ID for {track}: {e}")
+                # After extracting combined_genres and spawnre_hex:
+                # Set loved_* fields
+                normalized_file_path = file_path.as_posix().lower()
+                album_dir = Path(file_path).parent.as_posix().lower()
+                artist_dir = Path(album_dir).parent.as_posix().lower()
 
-                # Assign genres to their respective columns (up to 5)
-                spotify_genre_columns = {f'spotify_genre_{i+1}': spotify_genres[i] if i < len(spotify_genres) else '' for i in range(5)}
-                last_fm_genre_columns = {f'last_FM_genre_{i+1}': last_fm_genres[i] if i < len(last_fm_genres) else '' for i in range(5)}
-                musicbrainz_genre_columns = {f'musicbrainz_genre_{i+1}': musicbrainz_genres[i] if i < len(musicbrainz_genres) else '' for i in range(5)}
-
-                # Add track data for CSV
                 track_dict = {
                     'artist': artist,
                     'album': album_tag,
@@ -938,7 +929,7 @@ def analyze_m3u(
                     'year': year,
                     'spawnre': ', '.join(closest_genres),
                     'spawnre_hex': spawnre_hex,
-                    'spawnre_tag': '',  # Placeholder
+                    'spawnre_tag': '',  # Placeholder, will assign later
                     'embedded_genre': embedded_genre,
                     'musicbrainz_artist_ID': mb_artistid,
                     'musicbrainz_release_group_ID': mb_releasegroupid,
@@ -948,17 +939,15 @@ def analyze_m3u(
                     'file_duration_ms': file_duration_ms,
                     'spotify_duration_ms': spotify_duration_ms,
                     'file_path': file_path.as_posix(),
-                    'loved_tracks': 'no',    # Initialize as 'no'; will update later
-                    'loved_albums': 'no',
-                    'loved_artists': 'no'
+                    'loved_tracks': 'yes' if normalized_file_path in loved_tracks_set else 'no',
+                    'loved_albums': 'yes' if album_dir in loved_albums_set else 'no',
+                    'loved_artists': 'yes' if artist_dir in loved_artists_set else 'no'
                 }
 
-                # Merge genre columns
                 track_dict.update(spotify_genre_columns)
                 track_dict.update(last_fm_genre_columns)
                 track_dict.update(musicbrainz_genre_columns)
 
-                # Initialize audio feature columns as empty; will populate after fetching
                 audio_feature_columns = [
                     'danceability', 'energy', 'key', 'loudness',
                     'mode', 'speechiness', 'acousticness', 'instrumentalness',
@@ -967,137 +956,170 @@ def analyze_m3u(
                 for feature in audio_feature_columns:
                     track_dict[feature] = ''
 
-                logger.debug(f"Appended track data: {track_dict}")
-
-                # After track_dict is fully constructed, but before appending to data:
-                normalized_file_path = Path(track_dict['file_path']).as_posix().lower()
-
-                # Derive album & artist directories in lowercase
-                album_dir = Path(normalized_file_path).parent.as_posix().lower()
-                artist_dir = Path(album_dir).parent.as_posix().lower()
-
-                # Check membership in loved sets
-                track_dict['loved_tracks'] = 'yes' if normalized_file_path in loved_tracks_set else 'no'
-                track_dict['loved_albums'] = 'yes' if album_dir in loved_albums_set else 'no'
-                track_dict['loved_artists'] = 'yes' if artist_dir in loved_artists_set else 'no'
-
                 data.append(track_dict)
 
-        # Update stats
-        stats['Total Tracks'] = len(data)
-        stats['Tracks with Genres'] = sum(1 for track in data if track.get('spawnre'))
-
-        # Assign spawnre_tag based on most frequent main genre per artist
-        for artist, genres in artist_genre_count.items():
+    # After processing all tracks
+    if not post:
+        # Determine spawnre_tag per artist
+        for artist_lower, genres in artist_genre_count.items():
             if genres:
                 most_frequent_genre = max(genres, key=genres.get)
-                artist_spawnre_tags[artist] = most_frequent_genre
-                logger.debug(f"Assigned spawnre_tag for artist '{artist}': {most_frequent_genre}")
+                artist_spawnre_tags[artist_lower] = most_frequent_genre
+                logger.debug(f"Assigned spawnre_tag for artist '{artist_lower}': {most_frequent_genre}")
             else:
-                artist_spawnre_tags[artist] = ''
-                logger.debug(f"No genres found for artist '{artist}'. spawnre_tag set to empty.")
+                artist_spawnre_tags[artist_lower] = ''
+                logger.debug(f"No genres found for artist '{artist_lower}'. spawnre_tag set to empty.")
 
-        # Assign spawnre_tag to all tracks by the artist
+        # Assign spawnre_tag to each track
         for track_data in data:
             artist_lower = track_data['artist'].lower()
             spawnre_tag = artist_spawnre_tags.get(artist_lower, '')
             track_data['spawnre_tag'] = spawnre_tag
-            logger.debug(f"Assigned spawnre_tag for '{track_data['artist']} - {track_data['track']}': {spawnre_tag}")
+            logger.debug(
+                f"Assigned spawnre_tag for '{track_data['artist']} - {track_data['track']}': {spawnre_tag}"
+            )
 
-        # Aggregate genre_counts from artist_genre_count
-        genre_counts = defaultdict(int)
-        for artist, genres in artist_genre_count.items():
-            for genre, count in genres.items():
-                genre_counts[genre] += count
-                logger.debug(f"Aggregated genre '{genre}' count to {genre_counts[genre]}")
+        # Populate Spotify IDs
+        if sp:
+            logger.info("Populating missing Spotify IDs...")
+            populate_missing_spotify_ids(data, sp)
+            logger.info("Completed populating Spotify IDs.")
+        else:
+            logger.warning("Spotify client not initialized. Skipping Spotify data population.")
 
-        logger.info(f"Genre Counts: {dict(genre_counts)}")
+    else:
+        # Post-processing specific code...
+        if post and csv_path:
+            # Existing post-processing code...
+            pass  # Already handled above
 
-        # Sort genres by occurrence count, highest first
-        sorted_genres = sorted(
-            [
-                (
-                    genre,
-                    genre_to_hex.get(genre.lower(), 'Unknown'),
-                    count
-                )
-                for genre, count in genre_counts.items()
-                if count > 0
-            ],
-            key=lambda x: x[2],  # Sort by count (occurrences)
-            reverse=True
-        )
+        # Assign spawnre_tag is already done above
+        # Now, update spotify_duration_ms for tracks with spotify_track_ID
 
-        logger.info(f"Sorted Genres: {sorted_genres}")
+        if sp:
+            logger.info("Updating missing Spotify durations...")
+            update_spotify_durations(data, sp)
+            logger.info("Completed updating Spotify durations.")
+        else:
+            logger.warning("Spotify client not initialized. Cannot update Spotify durations.")
 
-        # Determine the output CSV path
+    if post and csv_path:
+        output_csv_path = csv_path
+        stats_csv_path = csv_path.with_name(f"{csv_path.stem}_stats.csv")
+    else:
         output_csv_path = m3u_path.with_suffix('.csv')
-        stats_csv_path = m3u_path.with_stem(m3u_path.stem + '_stats').with_suffix('.csv')
+        stats_csv_path = m3u_path.with_name(f"{m3u_path.stem}_stats.csv")
+
+    logger.debug(f"Output CSV path set to: {output_csv_path}")
+    logger.debug(f"Stats CSV path set to: {stats_csv_path}")
 
     # Fetch audio features if requested
     if fetch_features:
-        logger.info("Fetching Spotify audio features...")
-        track_ids = [track_data['spotify_track_ID'] for track_data in data if track_data.get('spotify_track_ID')]
-        features_data = fetch_audio_features(sp, track_ids)
-        for track_data in data:
-            spotify_track_id = track_data.get('spotify_track_ID', '')
-            if spotify_track_id in features_data:
-                feature = features_data[spotify_track_id]
-                # Update track_data with audio features
-                track_data.update({
-                    'danceability': feature.get('danceability', ''),
-                    'energy': feature.get('energy', ''),
-                    'key': feature.get('key', ''),
-                    'loudness': feature.get('loudness', ''),
-                    'mode': feature.get('mode', ''),
-                    'speechiness': feature.get('speechiness', ''),
-                    'acousticness': feature.get('acousticness', ''),
-                    'instrumentalness': feature.get('instrumentalness', ''),
-                    'liveness': feature.get('liveness', ''),
-                    'valence': feature.get('valence', ''),
-                    'tempo': feature.get('tempo', ''),
-                    'time_signature': feature.get('time_signature', '')
-                })
+        if audio_features_source.lower() == 'embedded':
+            logger.info("Extracting audio features from embedded tags...")
+            for track_data in data:
+                file_path = track_data.get('file_path', '')
+                if file_path:
+                    try:
+                        audio_features = extract_audio_features(file_path)
+                        valid_features = {k: v for k, v in audio_features.items() if k in [
+                            'danceability', 'energy', 'key', 'loudness',
+                            'mode', 'speechiness', 'acousticness', 'instrumentalness',
+                            'liveness', 'valence', 'tempo', 'time_signature'
+                        ]}
+                        track_data.update(valid_features)
+                        logger.debug(
+                            f"Extracted audio features for '{track_data['artist']} - {track_data['track']}': {valid_features}"
+                        )
+                    except Exception as e:
+                        logger.error(
+                            f"Error extracting embedded audio features for '{track_data['artist']} - {track_data['track']}': {e}"
+                        )
+                        for feature in ['danceability', 'energy', 'key', 'loudness',
+                                        'mode', 'speechiness', 'acousticness', 'instrumentalness',
+                                        'liveness', 'valence', 'tempo', 'time_signature']:
+                            track_data[feature] = ''
+            logger.info("Completed extracting embedded audio features.")
+        elif audio_features_source.lower() == 'spotify' and sp:
+            logger.info("Fetching Spotify audio features...")
+            track_ids = [track_data['spotify_track_ID'] for track_data in data if track_data.get('spotify_track_ID')]
+            if track_ids:
+                try:
+                    features_data = {}
+                    for i in range(0, len(track_ids), 100):
+                        batch_ids = track_ids[i:i+100]
+                        response = sp.audio_features(tracks=batch_ids)
+                        for feature in response:
+                            if feature and feature['id']:
+                                features_data[feature['id']] = feature
+                    logger.debug(f"Fetched audio features data: {features_data}")
 
-        logger.info("Completed fetching Spotify audio features.")
+                    for track_data in data:
+                        spotify_track_id = track_data.get('spotify_track_ID', '')
+                        if spotify_track_id in features_data:
+                            feature = features_data[spotify_track_id]
+                            audio_feature_updates = {
+                                'danceability': feature.get('danceability', ''),
+                                'energy': feature.get('energy', ''),
+                                'key': feature.get('key', ''),
+                                'loudness': feature.get('loudness', ''),
+                                'mode': feature.get('mode', ''),
+                                'speechiness': feature.get('speechiness', ''),
+                                'acousticness': feature.get('acousticness', ''),
+                                'instrumentalness': feature.get('instrumentalness', ''),
+                                'liveness': feature.get('liveness', ''),
+                                'valence': feature.get('valence', ''),
+                                'tempo': feature.get('tempo', ''),
+                                'time_signature': feature.get('time_signature', '')
+                            }
+                            track_data.update(audio_feature_updates)
+                            logger.debug(
+                                f"Fetched Spotify audio features for '{track_data['artist']} - {track_data['track']}': {audio_feature_updates}"
+                            )
+                except Exception as e:
+                    logger.error(f"Error fetching Spotify audio features: {e}")
+            else:
+                logger.warning("No Spotify Track IDs found to fetch audio features.")
+            logger.info("Completed fetching Spotify audio features.")
+        else:
+            logger.info("Skipping audio features extraction as per 'none' option.")
 
     fieldnames = [
-        'artist', 'album', 'track', 'year', 'spawnre', 'spawnre_hex', 'spawnre_tag', 'embedded_genre',
-        'musicbrainz_artist_ID', 'musicbrainz_release_group_ID', 'musicbrainz_track_ID',
-        'spotify_artist_ID', 'spotify_track_ID', 'file_duration_ms', 'spotify_duration_ms',
-        'file_path',
-        'spotify_genre_1', 'spotify_genre_2', 'spotify_genre_3', 'spotify_genre_4', 'spotify_genre_5',
-        'last_FM_genre_1', 'last_FM_genre_2', 'last_FM_genre_3', 'last_FM_genre_4', 'last_FM_genre_5',
-        'musicbrainz_genre_1', 'musicbrainz_genre_2', 'musicbrainz_genre_3', 'musicbrainz_genre_4', 'musicbrainz_genre_5',
-        'danceability', 'energy', 'key', 'loudness', 'mode', 'speechiness', 'acousticness',
-        'instrumentalness', 'liveness', 'valence', 'tempo', 'time_signature',
+        'artist', 'album', 'track', 'year', 'spawnre', 'spawnre_hex', 'spawnre_tag',
+        'embedded_genre', 'musicbrainz_artist_ID', 'musicbrainz_release_group_ID',
+        'musicbrainz_track_ID', 'spotify_artist_ID', 'spotify_track_ID',
+        'file_duration_ms', 'spotify_duration_ms', 'file_path',
+        'spotify_genre_1', 'spotify_genre_2', 'spotify_genre_3',
+        'spotify_genre_4', 'spotify_genre_5',
+        'last_FM_genre_1', 'last_FM_genre_2', 'last_FM_genre_3',
+        'last_FM_genre_4', 'last_FM_genre_5',
+        'musicbrainz_genre_1', 'musicbrainz_genre_2', 'musicbrainz_genre_3',
+        'musicbrainz_genre_4', 'musicbrainz_genre_5',
+        'danceability', 'energy', 'key', 'loudness', 'mode',
+        'speechiness', 'acousticness', 'instrumentalness',
+        'liveness', 'valence', 'tempo', 'time_signature',
         'loved_tracks', 'loved_albums', 'loved_artists'
     ]
 
+    # Write the final CSV using process_tracks to ensure Spotify data is fetched
     try:
         with output_csv_path.open('w', newline='', encoding='utf-8') as csvfile:
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
             writer.writeheader()
-
             for track_data in data:
-                # Ensure all fields are present
-                for field in fieldnames:
-                    if field not in track_data:
-                        track_data[field] = ''
-
                 writer.writerow(track_data)
-                logger.debug(f"Wrote track data to CSV: {track_data}")
 
         logger.info(f"\nMain CSV file created successfully: {output_csv_path}")
     except Exception as e:
         logger.error(f"Error writing main CSV file: {e}")
 
-    # Writing stats CSV if requested
     if generate_stats:
+        # Re-compute stats and sorted genres regardless of post or not
+        stats, sorted_genres = compute_stats_and_genres(data, genre_mapping)
+
         try:
             with stats_csv_path.open('w', newline='', encoding='utf-8') as csvfile:
                 writer = csv.writer(csvfile)
-
                 # Write basic statistics
                 writer.writerow(['Statistic', 'Count'])
                 writer.writerow(['Total Tracks', stats['Total Tracks']])
@@ -1106,10 +1128,6 @@ def analyze_m3u(
 
                 # Write genre occurrence stats
                 writer.writerow(['Genre', 'Hex Value', 'Occurrences'])
-
-                logger.debug(f"Sorted genres for stats: {sorted_genres}")
-
-                # Write each genre's stats to the CSV
                 for genre, hex_value, count in sorted_genres:
                     writer.writerow([genre, hex_value, count])
                     logger.debug(f"Wrote genre stat to CSV: Genre={genre}, Hex={hex_value}, Count={count}")
@@ -1118,7 +1136,8 @@ def analyze_m3u(
         except Exception as e:
             logger.error(f"Error writing stats CSV file: {e}")
 
-    return data  # Return data for further processing if needed
+    return data
+
 
 # ---------------------------- Entry Point ----------------------------
 
@@ -1134,6 +1153,7 @@ if __name__ == "__main__":
         parser.add_argument('--spotify_client_secret', type=str, help='Spotify API client secret.')
         parser.add_argument('--generate_stats', action='store_true', help='Generate a stats CSV.')
         parser.add_argument('--fetch_features', action='store_true', help='Fetch Spotify audio features.')
+        parser.add_argument('--audio_features_source', type=str, choices=['embedded', 'spotify', 'none'], default='none', help='Source for audio features extraction.')
         parser.add_argument('--post', action='store_true', help='Perform post-processing.')
         parser.add_argument('--csv_file', type=str, help='Path to an existing CSV file for post-processing.')
         parser.add_argument('--loved_tracks', type=str, help='Path to a loved tracks M3U file.')
@@ -1158,6 +1178,12 @@ if __name__ == "__main__":
             parser.print_help()
             return
 
+        # Validate audio_features_source when fetch_features is True
+        if args.fetch_features and not args.audio_features_source:
+            logger.error("Error: Audio features source must be specified when fetch_features is enabled.")
+            parser.print_help()
+            return
+
         analyze_m3u(
             m3u_file=args.m3u or '',
             music_directory=args.music_dir or '',
@@ -1166,6 +1192,7 @@ if __name__ == "__main__":
             spotify_client_secret=args.spotify_client_secret or '',
             generate_stats=args.generate_stats,
             fetch_features=args.fetch_features,
+            audio_features_source=args.audio_features_source,
             post=args.post,
             csv_file=args.csv_file,
             loved_tracks=args.loved_tracks,
