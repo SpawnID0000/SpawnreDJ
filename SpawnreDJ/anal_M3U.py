@@ -421,46 +421,70 @@ def fetch_musicbrainz_ids_from_api(artist_name: str, track_name: str, album_name
     return musicbrainz_ids
 
 
-def populate_missing_spotify_ids(data: List[Dict[str, Any]], sp: spotipy.Spotify) -> None:
-    missing_ids = [track_data for track_data in data if not track_data.get('spotify_track_ID')]
+def populate_missing_spotify_ids(data: List[Dict[str, Any]], sp: spotipy.Spotify, batch_size: int = 50) -> None:
+    """
+    Populates missing Spotify Track IDs for tracks in the given data.
+    Processes tracks in batches for efficiency.
+    
+    Args:
+        data (List[Dict[str, Any]]): List of track dictionaries.
+        sp (spotipy.Spotify): Authenticated Spotify client.
+        batch_size (int): Number of tracks to process per batch.
+    """
+    # Filter tracks with missing Spotify Track IDs
+    missing_ids = [track for track in data if not track.get('spotify_track_ID')]
     logger.info(f"Found {len(missing_ids)} tracks with missing Spotify Track IDs.")
 
-    for track_data in missing_ids:
-        artist = track_data.get('artist', '').strip()
-        track = track_data.get('track', '').strip()
-        if not artist or not track:
-            logger.warning(f"Missing artist or track name for row: {track_data}")
-            continue
+    # Divide the tracks into batches
+    for i in range(0, len(missing_ids), batch_size):
+        batch = missing_ids[i:i + batch_size]
+        logger.info(f"Processing batch {i // batch_size + 1} with {len(batch)} tracks.")
+        
+        # Construct batch search queries
+        queries = []
+        track_map = {}
+        for track in batch:
+            artist = track.get('artist', '').strip()
+            track_name = track.get('track', '').strip()
+            if artist and track_name:
+                query = f"track:{track_name} artist:{artist}"
+                queries.append(query)
+                track_map[query] = track  # Map query to track for updating
+
+        # Execute Spotify searches
         try:
-            query = f"track:{track} artist:{artist}"
-            logger.debug(f"Searching Spotify for '{artist} - {track}'")
-            result = sp.search(q=query, type='track', limit=1)
-            if result['tracks']['items']:
-                track_item = result['tracks']['items'][0]
-                spotify_track_id = track_item['id']
-                spotify_artist_id = track_item['artists'][0]['id'] if track_item['artists'] else ''
-                spotify_duration_ms = track_item.get('duration_ms', 0)
+            for query in queries:
+                try:
+                    logger.debug(f"Searching Spotify for '{query}'")
+                    result = sp.search(q=query, type='track', limit=1)
+                    if result['tracks']['items']:
+                        # Update the track data
+                        track_item = result['tracks']['items'][0]
+                        track = track_map[query]
+                        track['spotify_track_ID'] = track_item['id']
+                        track['spotify_artist_ID'] = track_item['artists'][0]['id'] if track_item['artists'] else ''
+                        track['spotify_duration_ms'] = track_item.get('duration_ms', 0)
 
-                # Fetch artist genres with caching
-                spotify_genres = get_spotify_genres(artist, sp)
+                        # Fetch artist genres
+                        spotify_genres = track_item['artists'][0]['genres'][:5] if 'genres' in track_item['artists'][0] else []
+                        for j, genre in enumerate(spotify_genres):
+                            track[f'spotify_genre_{j + 1}'] = genre
 
-                # Populate the track data
-                track_data['spotify_track_ID'] = spotify_track_id
-                track_data['spotify_artist_ID'] = spotify_artist_id
-                track_data['spotify_duration_ms'] = spotify_duration_ms
+                        logger.info(f"Populated Spotify data for '{track['artist']} - {track['track']}': "
+                                    f"Track ID = {track['spotify_track_ID']}, Artist ID = {track['spotify_artist_ID']}, "
+                                    f"Duration = {track['spotify_duration_ms']} ms")
+                    else:
+                        logger.warning(f"No Spotify Track found for '{query}'.")
 
-                # Populate up to 5 genres
-                for i in range(1, 6):
-                    genre_key = f'spotify_genre_{i}'
-                    track_data[genre_key] = spotify_genres[i-1] if i-1 < len(spotify_genres) else ''
+                except Exception as e:
+                    logger.error(f"Error processing query '{query}': {e}")
 
-                logger.info(f"Populated Spotify data for '{artist} - {track}': Track ID = {spotify_track_id}, Artist ID = {spotify_artist_id}, Duration = {spotify_duration_ms} ms")
-            else:
-                logger.warning(f"No Spotify Track found for '{artist} - {track}'.")
-        except spotipy.exceptions.SpotifyException as e:
-            logger.error(f"Spotify API error for '{artist} - {track}': {e}")
+            time.sleep(random.uniform(1, 2))  # Delay between batch requests to avoid rate limits
+
         except Exception as e:
-            logger.error(f"Unexpected error for '{artist} - {track}': {e}")
+            logger.error(f"Error fetching Spotify data for batch {i // batch_size + 1}: {e}")
+
+    logger.info("Completed populating missing Spotify IDs.")
 
 
 def determine_format_using_metadata(track_name: str, artist_name: str, file_path: Path) -> str:
