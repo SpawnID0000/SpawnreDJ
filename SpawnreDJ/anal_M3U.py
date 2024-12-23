@@ -321,20 +321,26 @@ def find_closest_genre_matches(genres: List[str], genre_mapping: Dict[str, Dict[
     return matched_genres, spawnre_hex
 
 
-def parse_m3u_for_loved(m3u_file: Path, music_directory: Path) -> set:
-    loved_paths = set()
+def parse_m3u_for_loved(m3u_file: Path, music_directory: Path, level: str = 'track') -> set:
+
+    loved_set = set()
+
     if m3u_file.exists():
         with m3u_file.open('r', encoding='utf-8') as file:
             for line in file:
                 line = line.strip()
-                if not line.startswith('#') and line:
-                    track_path = (music_directory / line).resolve() if not Path(line).is_absolute() else Path(line).resolve()
-                    normalized_path = track_path.as_posix().lower()
-                    loved_paths.add(normalized_path)
-                    logger.debug(f"Added loved path: {normalized_path}")
-    else:
-        logger.warning(f"Loved M3U file '{m3u_file}' does not exist.")
-    return loved_paths
+                if line and not line.startswith("#"):  # Skip comments and empty lines
+                    file_path = music_directory / line
+                    file_path = file_path.resolve()  # Resolve full path
+
+                    if level == 'track':
+                        loved_set.add(file_path)
+                    elif level == 'album':
+                        loved_set.add(file_path.parent)  # Parent directory = album
+                    elif level == 'artist':
+                        loved_set.add(file_path.parent.parent)  # Grandparent directory = artist
+
+    return loved_set
 
 
 def fetch_audio_features(sp: spotipy.Spotify, track_ids: List[str], retries: int = 5) -> Dict[str, Dict[str, Any]]:
@@ -690,25 +696,64 @@ def analyze_m3u(
         csv_path = None
 
     # Initialize loved sets
+    analyzed_tracks = []
     loved_tracks_set = set()
     loved_albums_set = set()
     loved_artists_set = set()
 
+    # Open and parse the M3U file
+    try:
+        with open(m3u_file, 'r', encoding='utf-8') as m3u_file:
+            for line in m3u_file:
+                line = line.strip()
+                if line and not line.startswith("#"):  # Skip empty lines and comments
+                    track_path = Path(line).resolve()
+                    analyzed_tracks.append({
+                        'file_path': str(track_path),
+                        'metadata': {},  # Placeholder for additional track metadata
+                    })
+        logger.debug(f"Total tracks analyzed: {len(analyzed_tracks)}")
+    except Exception as e:
+        logger.error(f"Failed to process M3U file: {e}")
+        return
+
+    # Process loved tracks, albums, and artists
     if loved_tracks:
         loved_tracks_path = sanitize_path(loved_tracks)
-        loved_tracks_set = parse_m3u_for_loved(loved_tracks_path, music_dir_path)
+        loved_tracks_set = parse_m3u_for_loved(loved_tracks_path, music_dir_path, level='track')
         logger.debug(f"Loaded {len(loved_tracks_set)} loved tracks.")
 
     if loved_albums:
         loved_albums_path = sanitize_path(loved_albums)
-        loved_albums_set = parse_m3u_for_loved(loved_albums_path, music_dir_path)
+        loved_albums_set = parse_m3u_for_loved(loved_albums_path, music_dir_path, level='album')
         logger.debug(f"Loaded {len(loved_albums_set)} loved albums.")
 
     if loved_artists:
         loved_artists_path = sanitize_path(loved_artists)
-        loved_artists_set = parse_m3u_for_loved(loved_artists_path, music_dir_path)
+        loved_artists_set = parse_m3u_for_loved(loved_artists_path, music_dir_path, level='artist')
         logger.debug(f"Loaded {len(loved_artists_set)} loved artists.")
 
+    # Normalize loved_*_set once for consistent case-insensitive comparisons
+    loved_tracks_set = {Path(p).resolve().as_posix().lower() for p in loved_tracks_set}
+    loved_albums_set = {Path(p).resolve().as_posix().lower() for p in loved_albums_set}
+    loved_artists_set = {Path(p).resolve().as_posix().lower() for p in loved_artists_set}
+
+    # Process each track and assign "loved" flags
+    for track in analyzed_tracks:
+        # Resolve and normalize the current track path
+        track_path = Path(track['file_path']).resolve()
+        track_path_str = track_path.as_posix().lower()
+
+        # Perform comparisons directly with normalized sets
+        track['loved_track'] = track_path_str in loved_tracks_set
+        track['loved_album'] = track_path.parent.as_posix().lower() in loved_albums_set
+        track['loved_artist'] = track_path.parent.parent.as_posix().lower() in loved_artists_set
+
+        # Log debug information
+        logger.debug(f"Track: {track_path}, Loved Track: {track['loved_track']}, "
+                     f"Loved Album: {track['loved_album']}, Loved Artist: {track['loved_artist']}")
+
+    # Initialize genre-related mappings
     data: List[Dict[str, Any]] = []
     artist_genre_count: Dict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
     artist_spawnre_tags: Dict[str, str] = {}
@@ -721,7 +766,7 @@ def analyze_m3u(
         related_genres = [
             genre_mapping[rel_code]['Genre'].lower()
             for rel_code in related_codes
-            if rel_code in genre_mapping and genre_mapping[rel_code]['Genre']
+            if genre_mapping.get(rel_code)
         ]
         if related_genres:
             related_genre_map[genre] = related_genres
